@@ -1,5 +1,5 @@
 > [!WARNING]
-> **SIP のデバッグ制限だけを解除する必要があります。** `csrutil enable --without debug` を使用してください。`notch`/`below` レイアウトの上端クリック用モジュールでも、ファイルシステム保護は有効のままにできます。
+> **システム整合性保護（SIP）のデバッグ制限を解除する必要があります。** `csrutil enable --without debug` だけで十分で、SIP のその他の保護は有効のままにできます。
 > このプロジェクトは実行中のシステムプロセスをメモリ内でパッチします。詳細は[システム要件](#システム要件)を参照してください。
 
 <p align="center">
@@ -48,7 +48,7 @@ macOS 27（27.3 以降）の MenuBarAgent には Dynamic Island の実装が含�
 | --- | --- |
 | macOS | 27.3 beta（ビルド 26C5035r）のみ対応。27.2 などその他のバージョンには対応していません。パッチアドレスはビルドごとに検証され、バイナリが一致しない場合はスクリプトが停止します。 |
 | ハードウェア | ノッチ付き MacBook。内蔵ディスプレイが有効である必要があります。 |
-| SIP | SIP のデバッグ制限だけを解除する必要があります。復旧モードで `csrutil enable --without debug` を実行してください。`notch`/`below` の上端クリック用モジュールはメモリ内で JIT コンパイルされ、App Group コンテナへの書き込みや dylib のマッピングは行いません。ファイルシステム保護は有効のままにできます。 |
+| SIP | システム整合性保護のデバッグ制限を解除する必要があります。復旧モードで `csrutil enable --without debug` を実行してください（推奨。SIP のその他の保護は有効のままです）。SIP を完全に無効にしても（`csrutil disable`）動作します。 |
 | ツール | 最新の Xcode beta を `sudo xcode-select -s /Applications/Xcode-beta.app/Contents/Developer` で選択してください。macOS 27 対応のコマンドラインツールでも動作します。古いツール（環境によっては `xcode-select --install` で入るもの）では lldb のアタッチ時にクラッシュします。 |
 | デバッグ権限 | パスワードなしのデバッグ：`sudo DevToolsSecurity -enable` を実行し、ユーザーが `_developer` グループに属している必要があります。そうでないと lldb は「Developer Tools Access」ダイアログを待ち続けます。 |
 

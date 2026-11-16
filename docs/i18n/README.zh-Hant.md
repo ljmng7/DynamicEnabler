@@ -1,5 +1,5 @@
 > [!WARNING]
-> **只需解除 SIP 的除錯限制。** 使用 `csrutil enable --without debug`；包括 `notch`/`below` 版面的頂部點擊模組在內，檔案系統保護均可保持開啟。
+> **需要解除系統完整性保護（SIP）的除錯限制。** 執行 `csrutil enable --without debug` 即可，SIP 的其餘保護可以保持開啟。
 > 本專案透過記憶體修補程式修改執行中的系統程序。詳見[系統需求](#系統需求)。
 
 <p align="center">
@@ -48,7 +48,7 @@ macOS 27.3 及更高版本的 MenuBarAgent 內建了動態島實作，但僅在 
 | --- | --- |
 | macOS | 僅支援 27.3 beta（build 26C5035r），27.2 等其他版本不支援。修補程式位址按版本驗證，二進位檔不符時指令碼會自動停止。 |
 | 硬體 | 帶有瀏海的 MacBook；內建顯示器必須處於啟用狀態。 |
-| SIP | 只需解除 SIP 的除錯限制：在復原模式中執行 `csrutil enable --without debug`。`notch`/`below` 的頂部點擊模組在記憶體中 JIT 編譯，不寫入 App Group 容器，也不映射 dylib；檔案系統保護可保持開啟。 |
+| SIP | 必須解除系統完整性保護（SIP）的除錯限制：在復原模式中執行 `csrutil enable --without debug`（建議，SIP 其餘保護保持開啟）。完全關閉 SIP（`csrutil disable`）也可以。 |
 | 工具 | 最新的 Xcode beta，並用 `sudo xcode-select -s /Applications/Xcode-beta.app/Contents/Developer` 切換過去。與 macOS 27 對應的命令列工具也可以；舊版工具（某些系統上 `xcode-select --install` 安裝的就是舊版）在 lldb 附加程序時會當機。 |
 | 除錯權限 | 需要免密碼除錯：執行 `sudo DevToolsSecurity -enable`，並且目前使用者在 `_developer` 群組中。否則 lldb 會一直等待「開發者工具存取」授權視窗。 |
 

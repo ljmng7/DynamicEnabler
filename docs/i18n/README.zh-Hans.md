@@ -1,5 +1,5 @@
 > [!WARNING]
-> **只需解除 SIP 的调试限制。** 使用 `csrutil enable --without debug`；包括 `notch`/`below` 布局的顶部点击模块在内，文件系统保护均可保持开启。
+> **需要解除系统完整性保护（SIP）的调试限制。** 运行 `csrutil enable --without debug` 即可，SIP 的其余保护可以保持开启。
 > 本项目通过内存补丁修改运行中的系统进程。详见[系统要求](#系统要求)。
 
 <p align="center">
@@ -48,7 +48,7 @@ macOS 27.3 及更高版本的 MenuBarAgent 内置了灵动岛实现，但仅在�
 | --- | --- |
 | macOS | 仅支持 27.3 beta（build 26C5035r），27.2 等其他版本不支持。补丁地址按版本验证，二进制不匹配时脚本会自动停止。 |
 | 硬件 | 带刘海的 MacBook；内置显示器必须处于激活状态。 |
-| SIP | 只需解除 SIP 的调试限制：在恢复模式中运行 `csrutil enable --without debug`。`notch`/`below` 的顶部点击模块在内存中 JIT 编译，不写入 App Group 容器，也不映射 dylib；文件系统保护可保持开启。 |
+| SIP | 必须解除系统完整性保护（SIP）的调试限制：在恢复模式中运行 `csrutil enable --without debug`（推荐，SIP 其余保护保持开启）。完全关闭 SIP（`csrutil disable`）也可以。 |
 | 工具 | 最新的 Xcode beta，并用 `sudo xcode-select -s /Applications/Xcode-beta.app/Contents/Developer` 切换过去。与 macOS 27 对应的命令行工具也可以；旧版工具（某些系统上 `xcode-select --install` 装的就是旧版）在 lldb 附加进程时会崩溃。 |
 | 调试权限 | 需要免密调试：执行 `sudo DevToolsSecurity -enable`，并且当前用户在 `_developer` 组中。否则 lldb 会一直等待“开发者工具访问”授权框。 |
 

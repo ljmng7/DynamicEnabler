@@ -1,5 +1,5 @@
 > [!WARNING]
-> **Seule la restriction de débogage du SIP doit être levée.** Utilisez `csrutil enable --without debug` ; les protections du système de fichiers peuvent rester actives, y compris pour le module de clics sur le bord supérieur de l'îlot dans les dispositions `notch`/`below`.
+> **La restriction de débogage de la protection de l'intégrité du système (SIP) doit être levée.** `csrutil enable --without debug` suffit ; le reste du SIP peut rester actif.
 > Ce projet modifie les processus système en cours d'exécution en mémoire. Voir [Exigences](#exigences) pour plus de détails.
 
 <p align="center">
@@ -48,7 +48,7 @@ Tous les correctifs sont en mémoire uniquement. Rien sur le volume système n'e
 | --- | --- |
 | macOS | 27.3 beta (build 26C5035r) uniquement ; les autres versions, y compris 27.2, ne sont pas prises en charge. Les adresses de correctif sont vérifiées par build ; le script s'arrête si le binaire ne correspond pas. |
 | Matériel | MacBook avec encoche ; l'écran intégré doit être actif. |
-| SIP | Seule la restriction de débogage du SIP doit être levée : en mode de récupération, exécutez `csrutil enable --without debug`. Le module de clics sur le bord supérieur pour `notch`/`below` est compilé en mémoire par JIT, sans écrire dans le conteneur App Group ni mapper de dylib ; les protections du système de fichiers peuvent rester actives. |
+| SIP | La restriction de débogage de la protection de l'intégrité du système doit être levée : en mode de récupération, exécutez `csrutil enable --without debug` (recommandé ; le reste du SIP reste actif). Un SIP entièrement désactivé (`csrutil disable`) fonctionne aussi. |
 | Outils | La dernière bêta de Xcode, sélectionnée avec `sudo xcode-select -s /Applications/Xcode-beta.app/Contents/Developer`. Les outils en ligne de commande pour macOS 27 conviennent aussi ; les outils plus anciens (sur certains systèmes, ceux de `xcode-select --install`) plantent lorsque lldb s'attache. |
 | Débogage | Débogage sans mot de passe : exécutez `sudo DevToolsSecurity -enable`, et votre utilisateur doit appartenir au groupe `_developer`. Sinon, lldb attend la fenêtre « Developer Tools Access ». |
 

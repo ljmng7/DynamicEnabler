@@ -1,5 +1,5 @@
 > [!WARNING]
-> **Solo es necesario levantar la restricción de depuración de SIP.** Use `csrutil enable --without debug`; las protecciones del sistema de archivos pueden permanecer activas, también para el módulo de clics en el borde superior de la isla en los diseños `notch`/`below`.
+> **Debe levantarse la restricción de depuración de la Protección de Integridad del Sistema (SIP).** Basta con `csrutil enable --without debug`; el resto de SIP puede seguir activo.
 > Este proyecto parchea procesos del sistema en ejecución en memoria. Consulte [Requisitos](#requisitos) para más detalles.
 
 <p align="center">
@@ -48,7 +48,7 @@ Todos los parches están solo en memoria. No se modifica nada en el volumen del 
 | --- | --- |
 | macOS | Solo 27.3 beta (compilación 26C5035r); otras versiones, incluida 27.2, no son compatibles. Las direcciones de parche se verifican por compilación; el script se detiene si el binario no coincide. |
 | Hardware | MacBook Pro con notch; la pantalla integrada debe estar activa. |
-| SIP | Solo debe levantarse la restricción de depuración de SIP: en el modo de recuperación, ejecute `csrutil enable --without debug`. El módulo de clics en el borde superior para `notch`/`below` se compila mediante JIT en memoria, sin escribir en el contenedor App Group ni mapear una dylib; las protecciones del sistema de archivos pueden permanecer activas. |
+| SIP | Debe levantarse la restricción de depuración de la Protección de Integridad del Sistema: en el modo de recuperación, ejecute `csrutil enable --without debug` (recomendado; el resto de SIP sigue activo). Deshabilitar SIP por completo (`csrutil disable`) también funciona. |
 | Herramientas | La última beta de Xcode, seleccionada con `sudo xcode-select -s /Applications/Xcode-beta.app/Contents/Developer`. Las Command Line Tools para macOS 27 también sirven; las herramientas antiguas (en algunos sistemas, las de `xcode-select --install`) fallan cuando lldb se adjunta. |
 | Depuración | Depuración sin contraseña: ejecuta `sudo DevToolsSecurity -enable` y tu usuario debe pertenecer al grupo `_developer`. Si no, lldb espera al cuadro de diálogo «Developer Tools Access». |
 

@@ -127,13 +127,6 @@ def fail(message):
     sys.exit("Error: " + message)
 
 
-def trash_path(path):
-    """Moves a project-created file or directory to the user's Trash."""
-    if not os.path.lexists(path):
-        return True
-    return run("/usr/bin/trash", path).returncode == 0
-
-
 def gui_domain():
     return f"gui/{os.getuid()}"
 
@@ -756,11 +749,12 @@ TOP_HIT_SOURCE = r'''
 #define kName @"DynamicEnablerTopHit"
 #define kStripName @"DynamicEnablerTopStrip"
 DE_LOCAL char kSavedFilters;              // container -> its filters before the invert filter was removed
-DE_LOCAL char kStripKey;                  // island window -> rectangular opaque top-row strip
 DE_LOCAL BOOL gEnabled, gScanQueued, gWriting, gInitialized;
 DE_LOCAL IMP gOrigSetHit, gOrigSetFilters;
 DE_LOCAL int gCount, gStrips, gRefreshes, gTopChecks, gTopMisses, gTopErrors;
 DE_LOCAL NSMutableArray *gCovered;        // [window, container, hit layer] of every covered island
+DE_LOCAL NSMutableArray *gStripItems;     // [container, strip] of every top-row strip in place
+DE_LOCAL NSMutableArray *gStripNext;      // the same, collected by the scan in progress
 DE_LOCAL id gObserver;
 
 typedef int (*FindWindowFn)(int, int, int, int, const CGPoint *, CGPoint *, uint32_t *, int *);
@@ -817,35 +811,34 @@ DE_LOCAL CALayer *islandRoot(NSWindow *w) {
     return (w.contentView.superview ?: w.contentView).layer;
 }
 
-DE_LOCAL void clearTopStrip(NSWindow *w) {
-    CALayer *s = objc_getAssociatedObject(w, &kStripKey);
-    if (!s) return;
-    [s removeFromSuperlayer];
-    objc_setAssociatedObject(w, &kStripKey, nil, OBJC_ASSOCIATION_RETAIN);
+DE_LOCAL CALayer *stripIn(NSArray *items, CALayer *container) {
+    for (NSArray *item in items) if (item[0] == container) return item[1];
+    return nil;
 }
 
 // The rounded clipping shape used for hit testing is narrower than the painted top row near the
 // corners, leaving a thin dead band where clicks reach the menu bar. A rectangular opaque strip
 // over the flat part of the painted row makes that row part of the island's window alpha.
+// Every island container has its own strip. A scan collects the strips that are still wanted
+// and removes the rest, so a strip never outlives its island or another island's check.
 DE_LOCAL void ensureTopStrip(NSWindow *w, CALayer *container) {
     CALayer *root = islandRoot(w);
-    if (!root) return;
+    if (!root || stripIn(gStripNext, container)) return;
     CGRect lr = [container convertRect:container.bounds toLayer:root];
-    if (fabs(CGRectGetMaxY(lr) - root.bounds.size.height) > 0.5) { clearTopStrip(w); return; }
+    if (fabs(CGRectGetMaxY(lr) - root.bounds.size.height) > 0.5) return;     // not at the top edge
     CGFloat flat = lr.size.width - 2.0 * container.cornerRadius;
-    if (flat < 2.0) { clearTopStrip(w); return; }
-    CALayer *s = objc_getAssociatedObject(w, &kStripKey);
+    if (flat < 2.0) return;                                 // a circle has no flat top row
+    CALayer *s = stripIn(gStripItems, container);
     if (!s) {
         s = [CALayer layer];
         s.name = kStripName;
         s.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
         s.actions = @{@"bounds": [NSNull null], @"position": [NSNull null], @"frame": [NSNull null],
                       @"onOrderIn": [NSNull null], @"onOrderOut": [NSNull null]};
-        objc_setAssociatedObject(w, &kStripKey, s, OBJC_ASSOCIATION_RETAIN);
     }
     if (s.superlayer != root) [root insertSublayer:s atIndex:0];
     s.frame = (CGRect){{NSMidX(lr) - flat / 2.0, root.bounds.size.height - 1.0}, {flat, 1.0}};
-    gStrips++;
+    [gStripNext addObject:@[container, s]];
 }
 
 DE_LOCAL void walk(NSWindow *w, CALayer *l, BOOL add) {
@@ -872,7 +865,6 @@ DE_LOCAL void walk(NSWindow *w, CALayer *l, BOOL add) {
             } else {
                 [u removeFromSuperlayer];
                 restoreFilter(l);
-                clearTopStrip(w);
             }
         }
         walk(w, c, add);
@@ -881,17 +873,23 @@ DE_LOCAL void walk(NSWindow *w, CALayer *l, BOOL add) {
 
 DE_LOCAL void dynamic_enabler_scan_top_hit(void) {
     BOOL add = gEnabled && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldInvertColors;
-    gCount = gStrips = 0;
+    gCount = 0;
     DE_DROP(gCovered);
     gCovered = [[NSMutableArray alloc] init];
+    gStripNext = [[NSMutableArray alloc] init];
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     for (NSWindow *w in NSApp.windows) {
         if (w.level != 26 || w.frame.size.height < 200) continue;      // the full-screen island window
         CALayer *root = (w.contentView.superview ?: w.contentView).layer;
-        if (!add) clearTopStrip(w);
         if (root) walk(w, root, add);
     }
+    for (NSArray *item in gStripItems)      // the island is gone, left the top edge or is not covered
+        if (!stripIn(gStripNext, item[0])) [(CALayer *)item[1] removeFromSuperlayer];
+    DE_DROP(gStripItems);
+    gStripItems = gStripNext;
+    gStripNext = nil;
+    gStrips = (int)gStripItems.count;
     [CATransaction commit];
 }
 
@@ -963,8 +961,10 @@ DE_LOCAL void hookedSetFilters(CALayer *self, SEL _cmd, NSArray *filters) {
 }
 
 int dynamic_enabler_top_hit(int enable);
+// Every 0.5 s: check the click shapes WindowServer has from the previous pass, then cover
+// layers that were rebuilt without going through the hooked setters.
 DE_LOCAL void timerTick(id self, SEL command, id timer) {
-    if (gEnabled) { dynamic_enabler_scan_top_hit(); checkTopRows(); }
+    if (gEnabled) { checkTopRows(); dynamic_enabler_scan_top_hit(); }
 }
 DE_LOCAL int controlTopHit(id self, SEL command, int enable) { return dynamic_enabler_top_hit(enable); }
 DE_LOCAL int topHitVersion(id self, SEL command) { return DYNAMIC_ENABLER_TOP_HIT_VERSION; }
@@ -1030,7 +1030,7 @@ def remove_top_hit_files():
         return
     for name in names:
         if name.startswith(TOP_HIT_PREFIX) and name.endswith(".dylib"):
-            trash_path(os.path.join(TOP_HIT_DIR, name))
+            os.remove(os.path.join(TOP_HIT_DIR, name))
 
 
 TOP_HIT_LLDB = r'''
@@ -1149,7 +1149,7 @@ def load_top_hit():
     except (OSError, ValueError) as error:
         return "top-edge module installation failed: " + str(error)
     finally:
-        trash_path(workdir)
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------------------------
