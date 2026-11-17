@@ -46,7 +46,7 @@ macOS 27.3 及更高版本的 MenuBarAgent 內建了動態島實作，但僅在 
 
 | 需求 | 說明 |
 | --- | --- |
-| macOS | 僅支援 27.3 beta（build 26C5035r），27.2 等其他版本不支援。修補程式位址按版本驗證，二進位檔不符時指令碼會自動停止。 |
+| macOS | 27.3 beta，已在 build 26C5035r（beta 1）和 26C5047e（beta 2）上測試；不支援 27.2 及更早版本。修補位置按程式碼特徵在本機二進位檔中尋找，後續版本可能無需更新即可使用；任何特徵不是恰好命中一次時，指令碼會停止且不做任何更動。 |
 | 硬體 | 帶有瀏海的 MacBook；內建顯示器必須處於啟用狀態。 |
 | SIP | 必須解除系統完整性保護（SIP）的除錯限制：在復原模式中執行 `csrutil enable --without debug`（建議，SIP 其餘保護保持開啟）。完全關閉 SIP（`csrutil disable`）也可以。 |
 | 工具 | 最新的 Xcode beta，並用 `sudo xcode-select -s /Applications/Xcode-beta.app/Contents/Developer` 切換過去。與 macOS 27 對應的命令列工具也可以；舊版工具（某些系統上 `xcode-select --install` 安裝的就是舊版）在 lldb 附加程序時會當機。 |

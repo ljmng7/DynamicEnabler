@@ -46,7 +46,7 @@ macOS 27(27.3 이상)의 MenuBarAgent에는 Dynamic Island 구현이 포함되�
 
 | 요구사항 | 세부사항 |
 | --- | --- |
-| macOS | 27.3 beta(빌드 26C5035r)만 지원하며, 27.2 등 다른 버전은 지원하지 않습니다. 패치 주소는 빌드별로 검증되며 바이너리가 일치하지 않으면 스크립트가 중지됩니다. |
+| macOS | 27.3 beta, 빌드 26C5035r(beta 1)와 26C5047e(beta 2)에서 테스트했습니다. 27.2 이하는 지원하지 않습니다. 패치 위치는 설치된 바이너리에서 코드 시그니처로 찾으므로 이후 빌드도 업데이트 없이 동작할 수 있으며, 시그니처가 정확히 한 번 일치하지 않으면 아무것도 변경하지 않고 스크립트가 중지됩니다. |
 | 하드웨어 | 노치가 있는 MacBook. 내장 디스플레이가 활성화되어 있어야 합니다. |
 | SIP | 시스템 무결성 보호의 디버깅 제한을 해제해야 합니다. 복구 모드에서 `csrutil enable --without debug`를 실행하세요(권장, 나머지 SIP 보호는 유지됨). SIP를 완전히 비활성화(`csrutil disable`)해도 됩니다. |
 | 도구 | 최신 Xcode beta를 `sudo xcode-select -s /Applications/Xcode-beta.app/Contents/Developer`로 선택하세요. macOS 27용 명령줄 도구도 사용할 수 있습니다. 오래된 도구(일부 환경에서는 `xcode-select --install`로 설치되는 버전)는 lldb 연결 시 충돌합니다. |

@@ -46,7 +46,7 @@ Todos los parches están solo en memoria. No se modifica nada en el volumen del 
 
 | Requisito | Detalles |
 | --- | --- |
-| macOS | Solo 27.3 beta (compilación 26C5035r); otras versiones, incluida 27.2, no son compatibles. Las direcciones de parche se verifican por compilación; el script se detiene si el binario no coincide. |
+| macOS | 27.3 beta, probado en las compilaciones 26C5035r (beta 1) y 26C5047e (beta 2). 27.2 y anteriores no son compatibles. Los puntos de parche se localizan por firma de código en los binarios instalados, por lo que compilaciones posteriores pueden funcionar sin actualizar; el script se detiene sin cambiar nada si alguna firma no coincide exactamente una vez. |
 | Hardware | MacBook Pro con notch; la pantalla integrada debe estar activa. |
 | SIP | Debe levantarse la restricción de depuración de la Protección de Integridad del Sistema: en el modo de recuperación, ejecute `csrutil enable --without debug` (recomendado; el resto de SIP sigue activo). Deshabilitar SIP por completo (`csrutil disable`) también funciona. |
 | Herramientas | La última beta de Xcode, seleccionada con `sudo xcode-select -s /Applications/Xcode-beta.app/Contents/Developer`. Las Command Line Tools para macOS 27 también sirven; las herramientas antiguas (en algunos sistemas, las de `xcode-select --install`) fallan cuando lldb se adjunta. |

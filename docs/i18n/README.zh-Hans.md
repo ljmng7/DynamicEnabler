@@ -46,7 +46,7 @@ macOS 27.3 及更高版本的 MenuBarAgent 内置了灵动岛实现，但仅在�
 
 | 要求 | 说明 |
 | --- | --- |
-| macOS | 仅支持 27.3 beta（build 26C5035r），27.2 等其他版本不支持。补丁地址按版本验证，二进制不匹配时脚本会自动停止。 |
+| macOS | 27.3 beta，已在 build 26C5035r（beta 1）和 26C5047e（beta 2）上测试；不支持 27.2 及更早版本。补丁位置按代码特征在本机二进制中查找，后续版本可能无需更新即可使用；任何特征不是恰好命中一次时，脚本会停止且不做任何改动。 |
 | 硬件 | 带刘海的 MacBook；内置显示器必须处于激活状态。 |
 | SIP | 必须解除系统完整性保护（SIP）的调试限制：在恢复模式中运行 `csrutil enable --without debug`（推荐，SIP 其余保护保持开启）。完全关闭 SIP（`csrutil disable`）也可以。 |
 | 工具 | 最新的 Xcode beta，并用 `sudo xcode-select -s /Applications/Xcode-beta.app/Contents/Developer` 切换过去。与 macOS 27 对应的命令行工具也可以；旧版工具（某些系统上 `xcode-select --install` 装的就是旧版）在 lldb 附加进程时会崩溃。 |

@@ -46,7 +46,7 @@ Alle Patches erfolgen nur im Speicher. Auf dem System-Volume wird nichts geände
 
 | Anforderung | Details |
 | --- | --- |
-| macOS | Nur 27.3 beta (Build 26C5035r); andere Versionen, auch 27.2, werden nicht unterstützt. Patch-Adressen werden pro Build verifiziert; das Skript stoppt, wenn die Binärdatei nicht übereinstimmt. |
+| macOS | 27.3 beta, getestet mit den Builds 26C5035r (Beta 1) und 26C5047e (Beta 2). 27.2 und älter werden nicht unterstützt. Die Patch-Stellen werden anhand von Code-Signaturen in den installierten Binärdateien gesucht, sodass spätere Builds ohne Update funktionieren können; das Skript stoppt ohne Änderungen, wenn eine Signatur nicht genau einmal passt. |
 | Hardware | MacBook mit Notch; das integrierte Display muss aktiv sein. |
 | SIP | Die Debugging-Einschränkung des Systemintegritätsschutzes muss aufgehoben sein: Im Wiederherstellungsmodus `csrutil enable --without debug` ausführen (empfohlen; der übrige SIP bleibt aktiv). Ein vollständig deaktivierter SIP (`csrutil disable`) funktioniert ebenfalls. |
 | Tools | Die neueste Xcode-Beta, ausgewählt mit `sudo xcode-select -s /Applications/Xcode-beta.app/Contents/Developer`. Command Line Tools für macOS 27 funktionieren ebenfalls; ältere Tools (auf manchen Systemen auch die von `xcode-select --install`) stürzen beim Anhängen von lldb ab. |

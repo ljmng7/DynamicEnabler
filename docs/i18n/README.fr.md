@@ -46,7 +46,7 @@ Tous les correctifs sont en mémoire uniquement. Rien sur le volume système n'e
 
 | Exigence | Détails |
 | --- | --- |
-| macOS | 27.3 beta (build 26C5035r) uniquement ; les autres versions, y compris 27.2, ne sont pas prises en charge. Les adresses de correctif sont vérifiées par build ; le script s'arrête si le binaire ne correspond pas. |
+| macOS | 27.3 beta, testé sur les builds 26C5035r (bêta 1) et 26C5047e (bêta 2). 27.2 et les versions antérieures ne sont pas prises en charge. Les points de correctif sont localisés par signature de code dans les binaires installés, de sorte que des builds ultérieurs peuvent fonctionner sans mise à jour ; le script s'arrête sans rien modifier si une signature ne correspond pas exactement une fois. |
 | Matériel | MacBook avec encoche ; l'écran intégré doit être actif. |
 | SIP | La restriction de débogage de la protection de l'intégrité du système doit être levée : en mode de récupération, exécutez `csrutil enable --without debug` (recommandé ; le reste du SIP reste actif). Un SIP entièrement désactivé (`csrutil disable`) fonctionne aussi. |
 | Outils | La dernière bêta de Xcode, sélectionnée avec `sudo xcode-select -s /Applications/Xcode-beta.app/Contents/Developer`. Les outils en ligne de commande pour macOS 27 conviennent aussi ; les outils plus anciens (sur certains systèmes, ceux de `xcode-select --install`) plantent lorsque lldb s'attache. |

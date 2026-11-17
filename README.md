@@ -46,7 +46,7 @@ All patches are in memory only. Nothing on the system volume is modified. Restar
 
 | Requirement | Details |
 | --- | --- |
-| macOS | 27.3 beta (build 26C5035r) only; other versions, including 27.2, are not supported. Patch addresses are verified per build; the script stops if the binary does not match. |
+| macOS | 27.3 beta, tested on builds 26C5035r (beta 1) and 26C5047e (beta 2). 27.2 and earlier are not supported. Patch sites are located by code signature in the installed binaries, so later builds may work without an update; the script stops without changing anything if a signature does not match exactly once. |
 | Hardware | MacBook with a notch; the built-in display must be active. |
 | SIP | System Integrity Protection's debugging restriction must be lifted: in Recovery, run `csrutil enable --without debug` (recommended; the rest of SIP stays on). Fully disabled SIP (`csrutil disable`) also works. |
 | Tools | The latest Xcode beta, selected with `sudo xcode-select -s /Applications/Xcode-beta.app/Contents/Developer`. Command Line Tools that match macOS 27 also work; older tools (including those from `xcode-select --install` on some systems) crash when lldb attaches. |

@@ -2,8 +2,8 @@
 """
 DynamicEnabler
 
-Enables the Dynamic Island of macOS 27.3 beta (build 26C5035r) on MacBook Pro models with a
-display notch, and integrates it with the physical notch.
+Enables the Dynamic Island of macOS 27.3 beta on MacBook Pro models with a display notch, and
+integrates it with the physical notch.
 
 Overview
   1. Activation
@@ -51,10 +51,18 @@ Overview
      sometimes keeps a stale click shape after the island's layers change, so every 0.5 s the
      module asks WindowServer which window owns the top row of each island and, only when that
      check fails, sets the container's filters again, which makes WindowServer recompute it.
+     From macOS 27.3 beta 2 on, two more corrections are needed for that row. WindowServer
+     delivers most real clicks there to the menu bar window, which belongs to the same process,
+     so the module hands a click on the flat top row of an island to the island window. And the
+     island's content ignores a mouse event that lies exactly on the window's top edge, which
+     is where the pointer is when it is pushed against the top of the screen; such events are
+     moved 0.5 pt into the island window.
 
 Requirements
-  - macOS 27.3 beta, build 26C5035r, with the exact MenuBarAgent binary this script was
-    verified against. Every patch site is compared with its original bytes before writing.
+  - macOS 27.3 beta (tested on builds 26C5035r and 26C5047e). The patch sites are located by
+    code signature in the installed binaries, so other builds work as long as every signature
+    still matches exactly once; otherwise nothing is changed. Every patch site is compared
+    with its original bytes before writing.
   - A MacBook Pro with a notch (the built-in display must be active).
   - SIP's debugging restriction lifted ("csrutil enable --without debug" in Recovery), or SIP
     fully disabled. lldb cannot attach to system processes otherwise.
@@ -94,14 +102,15 @@ import sys
 import tempfile
 import threading
 import time
+import types
+import uuid
 
 # ---------------------------------------------------------------------------------------------
 # General configuration
 # ---------------------------------------------------------------------------------------------
 
-SUPPORTED_BUILD = "26C5035r"
 MENUBARAGENT = "/System/Library/CoreServices/MenuBarAgent.app/Contents/MacOS/MenuBarAgent"
-MENUBARAGENT_UUID = "DE472913-A81D-35BE-9584-EC597987E015"
+AIRDROPUI = "/System/Library/CoreServices/AirDropUI.app/Contents/MacOS/AirDropUI"
 DOMAIN = "com.apple.MenuBarAgent"
 DEFAULTS = ("EmulateCenterHUD", "ShowSoftwareNotch")
 
@@ -162,11 +171,8 @@ def check_sip():
 
 
 def check_environment():
-    if run("sw_vers", "-buildVersion").stdout.strip() != SUPPORTED_BUILD:
-        fail(f"This script requires macOS 27.3 beta (build {SUPPORTED_BUILD}). "
-             "Patch addresses differ between builds.")
-    if MENUBARAGENT_UUID not in run("dwarfdump", "--uuid", MENUBARAGENT).stdout.upper():
-        fail("MenuBarAgent does not match the verified binary. No changes were made.")
+    if not os.path.exists(MENUBARAGENT):
+        fail("MenuBarAgent was not found. This script requires macOS 27.3 beta or later.")
     if run("xcode-select", "-p").returncode or run("xcrun", "--find", "lldb").returncode:
         fail("Xcode is required. Install the latest Xcode beta from https://developer.apple.com/download/all/\n"
              "and select it with: sudo xcode-select -s /Applications/Xcode-beta.app/Contents/Developer\n"
@@ -309,96 +315,359 @@ PROLOGUE = [0xA9BF7BFD, 0x910003FD]  # stp x29, x30, [sp, #-16]! ; mov x29, sp
 EPILOGUE = [0xA8C17BFD, 0xD65F03C0]  # ldp x29, x30, [sp], #16 ; ret
 
 # ---------------------------------------------------------------------------------------------
-# MenuBarAgent patch sites (file virtual addresses in build 26C5035r)
+# MenuBarAgent patch sites
 # ---------------------------------------------------------------------------------------------
+# The sites are located by code signature in the MenuBarAgent binary of the running system (see
+# locate_sites), so the script does not depend on the addresses of one build:
+#   gates               the two `cbz w0` after IsAppleInternalBuild() in front of EmulateCenterHUD
+#                       and ShowSoftwareNotch, with their original bytes
+#   leaf                builds the virtual sensor rectangle (stock: 59 x 34, 7 pt below the menu bar)
+#   rect_init           MacSystemUI.Rect.init(rawValue:) stub
+#   getter_a, getter_b  sensor rectangle getters; sites_a, sites_b are their call sites
+#   expanded_sites      getter A calls in the expanded layout (layout "below")
+#   no_obstruction      b.ne -> nop: expanded scenes report "no obstruction" (layout "below")
+#   to_screen           converts a rectangle to screen coordinates
+#   notch_window_sites  the frame of the square "software notch" window passes through to_screen
+#                       at two call sites (creation and update); the cave zeroes the size of the
+#                       rectangle that equals the notch
+#   remote_width_site   iPhone-mirrored ("remote") Live Activities are rendered at a fixed width of
+#                       374 pt and scaled by 0.8. The four instructions here return that width for
+#                       both the expanded and the list item metrics; the cave returns a width that
+#                       leaves REMOTE_SIDE pt on each side of the notch. Clients request new content
+#                       after the change, which takes a few seconds.
+#   caves               six code caves in the zero padding at the end of the __TEXT segment
 
-# IsAppleInternalBuild() guards in front of EmulateCenterHUD and ShowSoftwareNotch (cbz w0, ...).
-GATES = [(0x10057FD98, "00060034"), (0x10057A138, "80030034")]
-
-LEAF = 0x1001F7A98              # builds the virtual sensor rectangle (stock: 59 x 34, 7 pt below the menu bar)
-RECT_INIT = 0x1005A3E08         # MacSystemUI.Rect.init(rawValue:) stub
-GETTER_A = 0x1001F5644          # sensor rectangle getter (60 call sites)
-GETTER_B = 0x1001F567C          # second sensor rectangle getter (10 call sites)
-EXPANDED_SITES = (0x1001EE4C4, 0x1001EE4F4, 0x1001EE560, 0x1001EE7F4)   # getter calls in the expanded layout
-NO_OBSTRUCTION = 0x1003C9650    # b.ne -> nop: expanded scenes report "no obstruction" (layout "below")
-TEXT_RANGE = (0x100002A20, 0x100002A20 + 0x5A08D8)
+PACIBSP = 0xD503237F
 STOCK_SENSOR_W = 59.0
 # The gap that the system reports between the two menu bar areas is slightly wider than the
 # visible notch. Island geometry is narrowed by this margin on each side so that the idle pill
 # does not show a 1 px edge next to the notch.
 NOTCH_MARGIN = 1.5
-
-# The square "software notch" window: its frame passes through TO_SCREEN at two call sites
-# (creation and update). The cave zeroes the size of the rectangle that equals the notch.
-TO_SCREEN = 0x10044B200
-NOTCH_WINDOW_SITES = (0x1002F1B48, 0x1002AE284)
-
-# iPhone-mirrored ("remote") Live Activities are rendered at a fixed width of 374 pt and scaled
-# by 0.8. The four instructions at REMOTE_WIDTH_SITE return that fixed width for both the
-# expanded and the list item metrics; the cave returns a width that leaves REMOTE_SIDE pt on
-# each side of the notch. Clients request new content after the change, which takes a few
-# seconds.
-REMOTE_WIDTH_SITE = 0x1003CFB30
 REMOTE_WIDTH_ORIG = ("010080d2", "02008052", "0000ccd2", "e00ee8f2")
 REMOTE_SCALE, REMOTE_SIDE = 0.8, 72.0
+CAVE_SLOTS = (16, 16, 16, 16, 48, 16)       # instructions per cave
 
-# Code caves in the zero padding at the end of the __TEXT segment.
-CAVE0, CAVE1, CAVE2, CAVE3, CAVE4, CAVE5 = (0x1006A2700, 0x1006A2740, 0x1006A2780, 0x1006A27C0,
-                                            0x1006A2800, 0x1006A28C0)
-CAVE_SLOTS = {CAVE0: 16, CAVE1: 16, CAVE2: 16, CAVE3: 16, CAVE4: 48, CAVE5: 16}
+# Builds on which the result was tested, by the UUID of the arm64e MenuBarAgent image. On these
+# the located sites must equal the addresses below; other builds rely on the signatures alone.
+VERIFIED_BUILDS = {
+    "DE472913-A81D-35BE-9584-EC597987E015": ("26C5035r", dict(
+        gates=[0x10057FD98, 0x10057A138], leaf=0x1001F7A98, rect_init=0x1005A3E08,
+        getter_a=0x1001F5644, getter_b=0x1001F567C, calls=(60, 10),
+        expanded_sites=(0x1001EE4C4, 0x1001EE4F4, 0x1001EE560, 0x1001EE7F4), no_obstruction=0x1003C9650,
+        to_screen=0x10044B200, notch_window_sites=(0x1002F1B48, 0x1002AE284),
+        remote_width_site=0x1003CFB30, caves=0x1006A2700)),
+    "5DA23C12-9FC3-3E00-88CC-F873E76F7CBC": ("26C5047e", dict(
+        gates=[0x10059260C, 0x10058C970], leaf=0x100202D1C, rect_init=0x1005B84B4,
+        getter_a=0x1002007EC, getter_b=0x1002008A8, calls=(61, 10),
+        expanded_sites=(0x1001F94A8, 0x1001F94D8, 0x1001F9544, 0x1001F97D8), no_obstruction=0x1003D07B0,
+        to_screen=0x100454368, notch_window_sites=(0x1002F62E0, 0x1002B0540),
+        remote_width_site=0x1003D6CAC, caves=0x1006B8A00)),
+}
 
 
-def arm64e_slice(fat):
+def arm64e_slice(fat, path="MenuBarAgent"):
     nfat = struct.unpack(">I", fat[4:8])[0]
     for i in range(nfat):
         cpu, sub, off, size, _ = struct.unpack(">iiIII", fat[8 + 20 * i: 28 + 20 * i])
         if cpu == 0x0100000C and (sub & 0xFF) == 2:
             return fat[off: off + size]
-    fail("MenuBarAgent has no arm64e slice.")
+    fail(f"{path} has no arm64e slice.")
+
+
+class SignatureError(Exception):
+    """A patch site could not be located unambiguously."""
+
+
+class MachO:
+    """Minimal reader for one thin arm64e Mach-O image whose __TEXT segment starts at file offset 0."""
+
+    def __init__(self, data):
+        self.data = data
+        self.segments, self.sections = {}, {}
+        p = 32
+        for _ in range(struct.unpack_from("<I", data, 16)[0]):
+            cmd, size = struct.unpack_from("<II", data, p)
+            if cmd == 0x19:                                         # LC_SEGMENT_64
+                name = data[p + 8: p + 24].rstrip(b"\0").decode()
+                self.segments[name] = struct.unpack_from("<QQ", data, p + 24)       # vmaddr, vmsize
+                for i in range(struct.unpack_from("<I", data, p + 64)[0]):
+                    s = p + 72 + 80 * i
+                    addr, length = struct.unpack_from("<QQ", data, s + 32)
+                    self.sections[data[s: s + 16].rstrip(b"\0").decode()] = (
+                        addr, length, *struct.unpack_from("<II", data, s + 68))     # + reserved1, reserved2
+            elif cmd == 0x2:                                        # LC_SYMTAB
+                self.symoff, self.nsyms, self.stroff, _ = struct.unpack_from("<IIII", data, p + 8)
+            elif cmd == 0xB:                                        # LC_DYSYMTAB
+                self.indirectoff = struct.unpack_from("<I", data, p + 56)[0]
+            elif cmd == 0x1B:                                       # LC_UUID
+                self.uuid = str(uuid.UUID(bytes=data[p + 8: p + 24])).upper()
+            p += size
+        self.base = self.segments["__TEXT"][0]
+        self.t0, length = self.sections["__text"][:2]
+        self.t1 = self.t0 + length
+        self.text = data[self.t0 - self.base: self.t1 - self.base]
+        self.words = struct.unpack("<%dI" % (length // 4), self.text)
+
+    def raw(self, addr, n):
+        return self.data[addr - self.base: addr - self.base + n]
+
+    def w(self, addr):
+        return self.words[(addr - self.t0) >> 2] if self.t0 <= addr < self.t1 else 0
+
+    def stub(self, symbol):
+        """Address of the __auth_stubs entry of an imported symbol."""
+        addr, length, first, stride = self.sections["__auth_stubs"]
+        for i in range(length // stride):
+            index = struct.unpack_from("<I", self.data, self.indirectoff + 4 * (first + i))[0]
+            if index < self.nsyms:
+                s = self.stroff + struct.unpack_from("<I", self.data, self.symoff + 16 * index)[0]
+                if self.data[s: self.data.index(b"\0", s)].decode() == symbol:
+                    return addr + stride * i
+        raise SignatureError(f"import {symbol} not found")
+
+    def cstring(self, text):
+        addr, length = self.sections["__cstring"][:2]
+        i = self.data.find(b"\0" + text.encode() + b"\0", addr - self.base, addr - self.base + length)
+        if i < 0:
+            raise SignatureError(f'string "{text}" not found')
+        return self.base + i + 1
+
+    def branch_target(self, addr):
+        off = (self.w(addr) & 0x3FFFFFF) << 2
+        return addr + off - ((off & 0x8000000) << 1)
+
+    def adrp_page(self, addr):
+        """(page address, register) of an adrp instruction, or None."""
+        w = self.w(addr)
+        if w & 0x9F000000 != 0x90000000:
+            return None
+        imm = (((w >> 5) & 0x7FFFF) << 2) | ((w >> 29) & 3)
+        return (addr & ~0xFFF) + ((imm - ((imm & 0x100000) << 1)) << 12), w & 31
+
+    def adrp_add(self, addr):
+        page, w = self.adrp_page(addr), self.w(addr + 4)
+        if page and w & 0xFFC00000 == 0x91000000 and (w >> 5) & 31 == page[1]:
+            return page[0] + ((w >> 10) & 0xFFF)
+        return None
+
+    def fp_literal(self, addr):
+        """Doubles loaded by `adrp ; ldr d/q, [reg, #imm]` at addr, or None."""
+        page, w = self.adrp_page(addr), self.w(addr + 4)
+        if not page or (w >> 5) & 31 != page[1]:
+            return None
+        for opcode, size in ((0xFD400000, 8), (0x3DC00000, 16)):
+            if w & 0xFFC00000 == opcode:
+                return struct.unpack("<%dd" % (size // 8), self.raw(page[0] + ((w >> 10) & 0xFFF) * size, size))
+        return None
+
+    def find(self, words):
+        """Addresses where the exact instruction words occur."""
+        pattern, out = b"".join(enc(w) for w in words), []
+        i = self.text.find(pattern)
+        while i >= 0:
+            if i % 4 == 0:
+                out.append(self.t0 + i)
+            i = self.text.find(pattern, i + 1)
+        return out
+
+    def match(self, addr, masked):
+        """masked: [(value, mask)] compared with the instructions starting at addr."""
+        return all(self.w(addr + 4 * i) & m == v for i, (v, m) in enumerate(masked))
+
+    def function_start(self, addr):
+        while addr > self.t0 and self.w(addr) != PACIBSP:
+            addr -= 4
+        return addr
+
+
+def one(name, hits):
+    hits = sorted(set(hits))
+    if len(hits) != 1:
+        raise SignatureError(f"{name}: {len(hits)} matches instead of 1")
+    return hits[0]
+
+
+def locate_sites(image):
+    """Locates every MenuBarAgent patch site in a thin arm64e image by its code signature.
+
+    Returns a namespace with the fields described under "MenuBarAgent patch sites". Every
+    signature must match exactly once; otherwise SignatureError is raised and nothing is patched.
+    """
+    m = MachO(image)
+    s = types.SimpleNamespace(uuid=getattr(m, "uuid", ""))
+
+    s.rect_init = m.stub("_$s11MacSystemUI4RectV8rawValueACs5SIMD4VySdG_tcfC")
+    calls, tails = {}, []               # bl target -> call sites; tail calls (b) to Rect.init
+    for i, w in enumerate(m.words):
+        op = w >> 26
+        if op == 0x25:
+            addr = m.t0 + 4 * i
+            calls.setdefault(m.branch_target(addr), []).append(addr)
+        elif op == 0x05:
+            addr = m.t0 + 4 * i
+            if m.branch_target(addr) == s.rect_init:
+                tails.append(addr)
+
+    # Gates: `bl _IsAppleInternalBuild ; cbz w0, ...`, told apart by the preference key that is
+    # referenced right after the branch or at the top of a function called right after it.
+    guards = [a + 4 for a in calls.get(m.stub("_IsAppleInternalBuild"), []) if m.w(a + 4) & 0xFF00001F == 0x34000000]
+    s.gates = []
+    for key in DEFAULTS:
+        string = m.cstring(key)
+
+        def refers(g):
+            if any(m.adrp_add(a) == string for a in range(g + 4, g + 40, 4)):
+                return True
+            for a in range(g + 4, g + 16, 4):
+                if m.w(a) >> 26 == 0x25:
+                    t = m.branch_target(a)
+                    if any(m.adrp_add(x) == string for x in range(t, t + 32, 4)):
+                        return True
+            return False
+        gate = one(f"{key} gate", [g for g in guards if refers(g)])
+        s.gates.append((gate, m.raw(gate, 4).hex()))
+
+    # Leaf: loads -59 and (59, 34), computes the rectangle and tail-calls Rect.init.
+    leaf_body = [0x1E622821, 0x1E6C1002, 0x1E620821, 0x6F00F782, 0x6E080422, 0x4E62D400]
+    s.leaf = one("sensor rectangle leaf", [
+        t - 40 for t in tails
+        if m.fp_literal(t - 40) == (-STOCK_SENSOR_W,) and m.fp_literal(t - 8) == (STOCK_SENSOR_W, 34.0)
+        and [m.w(a) for a in range(t - 32, t - 8, 4)] == leaf_body])
+
+    # Getter A: `ldp q0, q1, [x20, #..] ; ldr x8, [x20, #..] ; ldrb w8, [x8, #..] ; cbnz w8` and a
+    # call to Rect.init. Getter B is the first later function that starts by copying x20 and
+    # loading two vectors from it.
+    getter_tail = [(0xAD400280, 0xFFC003FF), (0xF9400288, 0xFFC003FF), (0x39400108, 0xFFC003FF),
+                   (0x35000008, 0xFF00001F)]
+    s.getter_a = one("sensor getter A", [
+        a - 4 for a in m.find(PROLOGUE)
+        if m.w(a - 4) == PACIBSP and m.match(a + 8, getter_tail)
+        and any(m.w(x) >> 26 == 0x25 and m.branch_target(x) == s.rect_init for x in range(a + 24, a + 48, 4))])
+    s.getter_b = None
+    for f in range(s.getter_a + 4, s.getter_a + 0x400, 4):
+        if m.w(f) == PACIBSP and any(m.w(x) == 0xAA1403F3 and m.match(x + 4, getter_tail[:1])
+                                     for x in range(f + 4, f + 40, 4)):
+            s.getter_b = f
+            break
+    s.sites_a, s.sites_b = calls.get(s.getter_a, []), calls.get(s.getter_b, [])
+    if len(s.sites_a) < 40 or len(s.sites_b) < 5:
+        raise SignatureError(f"sensor getters: {len(s.sites_a)} and {len(s.sites_b)} call sites")
+
+    # Expanded layout (layout "below"): the function with exactly four getter A calls at these
+    # relative positions. None when it cannot be identified.
+    per_function = {}
+    for c in s.sites_a:
+        per_function.setdefault(m.function_start(c), []).append(c)
+    expanded = [cs for cs in per_function.values()
+                if len(cs) == 4 and [c - cs[0] for c in cs] == [0, 0x30, 0x9C, 0x330]]
+    s.expanded_sites = tuple(expanded[0]) if len(expanded) == 1 else None
+
+    # Expanded scenes report "no obstruction":
+    # `ldrb w8, [x20, #..] ; cmp w8, #1 ; b.ne ; adrp x8 ; ldr x0, [x8, #..] ; bl ; ldur q2, [..]`
+    s.no_obstruction = one("no-obstruction branch", [
+        a + 4 for a in m.find([0x7100051F])
+        if m.match(a - 4, [(0x39400288, 0xFFC003FF), (0x7100051F, 0xFFFFFFFF), (0x54000001, 0xFF00001F),
+                           (0x90000008, 0x9F00001F), (0xF9400100, 0xFFC003FF), (0x94000000, 0xFC000000),
+                           (0x3CC00002, 0xFFE00C1F)])])
+
+    # Screen conversion helper: `stp q0, q1, [sp] ; adrp x8 ; ldr x0, [x8, #..] ; bl ; bl ;
+    # ldr q3, [sp] ; mov d1, v3[1] ; fsub d0, d0, d1`
+    s.to_screen = one("screen conversion helper", [
+        m.function_start(a) for a in m.find([0x3DC003E3, 0x5E180461, 0x1E613800])
+        if m.match(a - 20, [(0xAD0007E0, 0xFFFFFFFF), (0x90000008, 0x9F00001F), (0xF9400100, 0xFFC003FF),
+                            (0x94000000, 0xFC000000), (0x94000000, 0xFC000000)])])
+    # Software notch window, creation: the call is followed by
+    # `stp q0, q1, [sp] ; mov d8, v0[1] ; mov d9, v1[1]`.
+    converts = calls.get(s.to_screen, [])
+    create = one("notch window creation site", [
+        c for c in converts if [m.w(c + 4), m.w(c + 8), m.w(c + 12)] == [0xAD0007E0, 0x5E180408, 0x5E180429]])
+    # Update: of the functions that call the creating function, the one with a single conversion.
+    creator_callers = {m.function_start(c) for c in calls.get(m.function_start(create), [])}
+    by_function = {}
+    for c in converts:
+        by_function.setdefault(m.function_start(c), []).append(c)
+    update = one("notch window update site", [cs[0] for f, cs in by_function.items()
+                                              if f in creator_callers and len(cs) == 1])
+    s.notch_window_sites = (create, update)
+
+    # Remote Live Activity width: `mov x1, #0 ; mov w2, #0 ; x0 = 374.0 ; ret`
+    s.remote_width_site = one("remote width", m.find([int.from_bytes(bytes.fromhex(h), "little")
+                                                        for h in REMOTE_WIDTH_ORIG] + [0xD65F03C0]))
+
+    # Code caves: zero padding between the last __TEXT section and the end of the segment.
+    vmaddr, vmsize = m.segments["__TEXT"]
+    end = max(a + n for a, n, *_ in m.sections.values() if vmaddr <= a < vmaddr + vmsize)
+    cave = (end + 0xFF) & ~0xFF
+    if cave + 0x200 > vmaddr + vmsize or any(m.raw(cave, 0x200)):
+        raise SignatureError("no room for the code caves")
+    s.caves = tuple(cave + off for off in (0, 0x40, 0x80, 0xC0, 0x100, 0x1C0))
+    return s
+
+
+def menubar_sites(image):
+    """Locates the patch sites and compares them with the verified addresses of known builds."""
+    try:
+        s = locate_sites(image)
+    except (SignatureError, KeyError, IndexError, struct.error) as exc:
+        fail("The Dynamic Island code could not be located in this build of MenuBarAgent "
+             f"({exc}).\nThis macOS build is not supported; the Dynamic Island exists from "
+             "macOS 27.3 beta on. No changes were made.")
+    build, known = VERIFIED_BUILDS.get(s.uuid, (None, None))
+    if known:
+        found = dict(gates=[a for a, _ in s.gates], leaf=s.leaf, rect_init=s.rect_init, getter_a=s.getter_a,
+                     getter_b=s.getter_b, calls=(len(s.sites_a), len(s.sites_b)),
+                     expanded_sites=s.expanded_sites, no_obstruction=s.no_obstruction, to_screen=s.to_screen,
+                     notch_window_sites=s.notch_window_sites, remote_width_site=s.remote_width_site,
+                     caves=s.caves[0])
+        wrong = sorted(k for k in known if known[k] != found[k])
+        if wrong:
+            fail(f"The located patch sites differ from the verified ones of build {build} "
+                 f"({', '.join(wrong)}). No changes were made.")
+    s.verified = build
+    return s
 
 
 def build_patches(layout):
-    """Returns ([(address, original bytes, new bytes)], (notch width, notch height) or None)."""
+    """Returns ([(address, original bytes, new bytes)], (notch width, notch height) or None, sites)."""
     with open(MENUBARAGENT, "rb") as f:
         image = arm64e_slice(f.read())
+    s = menubar_sites(image)
+    cave0, cave1, cave2, cave3, cave4, cave5 = s.caves
 
     def orig_word(addr):
         o = addr - 0x100000000
         return image[o: o + 4]
 
-    patches = [(a, bytes.fromhex(h), enc(NOP)) for a, h in GATES]
+    patches = [(a, bytes.fromhex(h), enc(NOP)) for a, h in s.gates]
+
+    def add_caves(caves):
+        for base, words in caves.items():
+            assert len(words) <= CAVE_SLOTS[s.caves.index(base)], "code cave overflow"
+            for i, w in enumerate(words):
+                patches.append((base + 4 * i, b"\0\0\0\0", enc(w)))
+
+    def notch_window_cave(real_notch_w, notch_h):
+        # Calls to_screen (v0 = origin, v1 = size) and zeroes the size when it equals the notch
+        # within 1 pt. Other windows are returned unchanged.
+        c4 = PROLOGUE + [bl(cave4 + 8, s.to_screen), fmov_imm(18, 1.0)]
+        skips = []
+        c4 += load_double(8, real_notch_w) + [fmov_d_x(17, 8), fsub(16, 1, 17), fabs(16, 16), fcmp(16, 18)]
+        skips.append(len(c4)); c4.append(None)
+        c4 += load_double(8, notch_h) + [fmov_d_x(17, 8), dup_hi(16, 1), fsub(16, 16, 17), fabs(16, 16), fcmp(16, 18)]
+        skips.append(len(c4)); c4.append(None)
+        c4 += [MOVI_V1_ZERO]
+        for at in skips:
+            c4[at] = 0x54000000 | ((len(c4) - at) << 5) | 0xA      # b.ge -> epilogue
+        return c4 + EPILOGUE
 
     geometry = notch_geometry()
     if layout == "classic":
         # Classic layout still needs to hide the software notch window
         if geometry:
-            real_notch_w, notch_h = geometry
-            # CAVE4: calls TO_SCREEN (v0 = origin, v1 = size) and zeroes the size when it equals the
-            # notch within 1 pt. Other windows are returned unchanged.
-            c4 = PROLOGUE + [bl(CAVE4 + 8, TO_SCREEN), fmov_imm(18, 1.0)]
-            skips = []
-            c4 += load_double(8, real_notch_w) + [fmov_d_x(17, 8), fsub(16, 1, 17), fabs(16, 16), fcmp(16, 18)]
-            skips.append(len(c4)); c4.append(None)
-            c4 += load_double(8, notch_h) + [fmov_d_x(17, 8), dup_hi(16, 1), fsub(16, 16, 17), fabs(16, 16), fcmp(16, 18)]
-            skips.append(len(c4)); c4.append(None)
-            c4 += [MOVI_V1_ZERO]
-            for at in skips:
-                c4[at] = 0x54000000 | ((len(c4) - at) << 5) | 0xA      # b.ge -> epilogue
-            c4 += EPILOGUE
-            for a in NOTCH_WINDOW_SITES:
-                if struct.unpack("<I", orig_word(a))[0] != bl(a, TO_SCREEN):
-                    fail("The software notch window call sites do not match the verified binary.")
-
-            # Apply CAVE4
-            assert len(c4) <= CAVE_SLOTS[CAVE4], "code cave overflow"
-            n = 4 * CAVE_SLOTS[CAVE4]
-            if image[CAVE4 - 0x100000000: CAVE4 - 0x100000000 + n] != b"\0" * n:
-                fail("The code cave area is not empty. No changes were made.")
-            for i, w in enumerate(c4):
-                patches.append((CAVE4 + 4 * i, b"\0\0\0\0", enc(w)))
-            for a in NOTCH_WINDOW_SITES:
-                patches.append((a, orig_word(a), enc(bl(a, CAVE4))))
-        return patches, None
+            add_caves({cave4: notch_window_cave(*geometry)})
+            for a in s.notch_window_sites:
+                patches.append((a, orig_word(a), enc(bl(a, cave4))))
+        return patches, None, s
 
     if not geometry:
         fail("No built-in display with a notch was found. Open the lid, or use --layout classic.")
@@ -406,85 +675,49 @@ def build_patches(layout):
     notch_w = real_notch_w - 2 * NOTCH_MARGIN
     below = layout == "below"
     sensor_w = STOCK_SENSOR_W if below else notch_w
+    if below and not s.expanded_sites:
+        fail("The expanded layout could not be located in this build of MenuBarAgent, so layout "
+             "\"below\" is not available. No changes were made.")
 
-    sites_a, sites_b = [], []
-    for addr in range(TEXT_RANGE[0], TEXT_RANGE[1], 4):
-        w = struct.unpack("<I", orig_word(addr))[0]
-        if w & 0xFC000000 != 0x94000000:
-            continue
-        off = (w & 0x3FFFFFF) << 2
-        if off & 0x8000000:
-            off -= 1 << 28
-        if addr + off == GETTER_A:
-            sites_a.append(addr)
-        elif addr + off == GETTER_B:
-            sites_b.append(addr)
-    if len(sites_a) != 60 or len(sites_b) != 10 or not set(EXPANDED_SITES) <= set(sites_a):
-        fail("The sensor getter call sites do not match the verified binary. No changes were made.")
-
-    # CAVE0 replaces the leaf: (x + (W - 59) / 2, 0, W, notch height), then Rect.init.
+    # cave0 replaces the leaf: (x + (W - 59) / 2, 0, W, notch height), then Rect.init.
     c0 = (load_double(8, sensor_w) + [fmov_d_x(2, 8), fsub(1, 1, 2), FMOV_D3_HALF, fmul(1, 1, 3),
                                       fadd(0, 0, 1)]
           + load_double(9, notch_h) + [fmov_d_x(1, 8), ins_hi_x(1, 9)])
-    c0.append(b(CAVE0 + 4 * len(c0), RECT_INIT))
+    c0.append(b(cave0 + 4 * len(c0), s.rect_init))
 
-    # CAVE1 (layout "below"): expanded presentations use the sensor moved down by its height.
-    c1 = PROLOGUE + [bl(CAVE1 + 8, GETTER_A), dup_hi(16, 0), dup_hi(4, 1), fadd(16, 16, 4),
+    # cave1 (layout "below"): expanded presentations use the sensor moved down by its height.
+    c1 = PROLOGUE + [bl(cave1 + 8, s.getter_a), dup_hi(16, 0), dup_hi(4, 1), fadd(16, 16, 4),
                      ins_hi_v(0, 16)] + EPILOGUE
 
-    # CAVE2 / CAVE3: all other callers receive the notch rectangle.
+    # cave2 / cave3: all other callers receive the notch rectangle.
     def notch_cave(base, getter):
         c = PROLOGUE + [bl(base + 8, getter)]
         c += load_double(8, (notch_w - sensor_w) / 2) + [fmov_d_x(5, 8), fsub(0, 0, 5)]
         c += load_double(9, notch_w) + [ins_lo_x(1, 9)] + EPILOGUE
         return c
 
-    # CAVE4: calls TO_SCREEN (v0 = origin, v1 = size) and zeroes the size when it equals the
-    # notch within 1 pt. Other windows are returned unchanged.
-    c4 = PROLOGUE + [bl(CAVE4 + 8, TO_SCREEN), fmov_imm(18, 1.0)]
-    skips = []
-    c4 += load_double(8, real_notch_w) + [fmov_d_x(17, 8), fsub(16, 1, 17), fabs(16, 16), fcmp(16, 18)]
-    skips.append(len(c4)); c4.append(None)
-    c4 += load_double(8, notch_h) + [fmov_d_x(17, 8), dup_hi(16, 1), fsub(16, 16, 17), fabs(16, 16), fcmp(16, 18)]
-    skips.append(len(c4)); c4.append(None)
-    c4 += [MOVI_V1_ZERO]
-    for at in skips:
-        c4[at] = 0x54000000 | ((len(c4) - at) << 5) | 0xA      # b.ge -> epilogue
-    c4 += EPILOGUE
-    for a in NOTCH_WINDOW_SITES:
-        if struct.unpack("<I", orig_word(a))[0] != bl(a, TO_SCREEN):
-            fail("The software notch window call sites do not match the verified binary.")
-
-    # CAVE5: fixed width for remote Live Activities (x1 = 0, w2 = 0, x0 = width bit pattern).
+    # cave5: fixed width for remote Live Activities (x1 = 0, w2 = 0, x0 = width bit pattern).
     remote_w = round((real_notch_w + 2 * REMOTE_SIDE) / REMOTE_SCALE * 2) / 2
     c5 = [0xD2800001, 0x52800002] + load_double(0, remote_w) + [0xD65F03C0]
-    if tuple(orig_word(REMOTE_WIDTH_SITE + 4 * i).hex() for i in range(4)) != REMOTE_WIDTH_ORIG:
-        fail("The remote Live Activity width instructions do not match the verified binary.")
 
-    caves = {CAVE0: c0, CAVE1: c1, CAVE2: notch_cave(CAVE2, GETTER_A),
-             CAVE3: notch_cave(CAVE3, GETTER_B), CAVE4: c4}
+    caves = {cave0: c0, cave1: c1, cave2: notch_cave(cave2, s.getter_a),
+             cave3: notch_cave(cave3, s.getter_b), cave4: notch_window_cave(real_notch_w, notch_h)}
     if not below:
-        caves[CAVE5] = c5
-    for base, words in caves.items():
-        assert len(words) <= CAVE_SLOTS[base], "code cave overflow"
-        n = 4 * CAVE_SLOTS[base]
-        if image[base - 0x100000000: base - 0x100000000 + n] != b"\0" * n:
-            fail("The code cave area is not empty. No changes were made.")
-        for i, w in enumerate(words):
-            patches.append((base + 4 * i, b"\0\0\0\0", enc(w)))
+        caves[cave5] = c5
+    add_caves(caves)
 
-    patches.append((LEAF, orig_word(LEAF), enc(b(LEAF, CAVE0))))
-    for a in sites_a:
-        patches.append((a, orig_word(a), enc(bl(a, CAVE1 if below and a in EXPANDED_SITES else CAVE2))))
-    for a in sites_b:
-        patches.append((a, orig_word(a), enc(bl(a, CAVE3))))
+    patches.append((s.leaf, orig_word(s.leaf), enc(b(s.leaf, cave0))))
+    for a in s.sites_a:
+        patches.append((a, orig_word(a), enc(bl(a, cave1 if below and a in s.expanded_sites else cave2))))
+    for a in s.sites_b:
+        patches.append((a, orig_word(a), enc(bl(a, cave3))))
     if below:
-        patches.append((NO_OBSTRUCTION, orig_word(NO_OBSTRUCTION), enc(NOP)))
-    for a in NOTCH_WINDOW_SITES:
-        patches.append((a, orig_word(a), enc(bl(a, CAVE4))))
+        patches.append((s.no_obstruction, orig_word(s.no_obstruction), enc(NOP)))
+    for a in s.notch_window_sites:
+        patches.append((a, orig_word(a), enc(bl(a, cave4))))
     if not below:
-        patches.append((REMOTE_WIDTH_SITE, orig_word(REMOTE_WIDTH_SITE), enc(b(REMOTE_WIDTH_SITE, CAVE5))))
-    return patches, geometry
+        patches.append((s.remote_width_site, orig_word(s.remote_width_site), enc(b(s.remote_width_site, cave5))))
+    return patches, geometry, s
 
 
 MENUBAR_LLDB = r'''
@@ -689,6 +922,17 @@ static inline CGPoint CGPointMake(CGFloat x, CGFloat y) { return (CGPoint){x,y};
 @property(readonly) NSView *contentView;
 - (NSRect)convertRectToScreen:(NSRect)de_rect;
 @end
+@interface NSEvent : NSObject
+@property(readonly) NSUInteger type;
+@property(readonly) CGPoint locationInWindow;
+@property(readonly) NSUInteger modifierFlags;
+@property(readonly) double timestamp;
+@property(readonly) NSInteger windowNumber;
+@property(readonly) NSInteger eventNumber;
+@property(readonly) NSInteger clickCount;
+@property(readonly) float pressure;
++ (NSEvent *)mouseEventWithType:(NSUInteger)de_type location:(CGPoint)de_location modifierFlags:(NSUInteger)de_flags timestamp:(double)de_time windowNumber:(NSInteger)de_window context:(id)de_context eventNumber:(NSInteger)de_number clickCount:(NSInteger)de_clicks pressure:(float)de_pressure;
+@end
 @interface NSApplication : NSObject
 + (NSApplication *)sharedApplication;
 @property(readonly) NSArray *windows;
@@ -750,12 +994,13 @@ TOP_HIT_SOURCE = r'''
 #define kStripName @"DynamicEnablerTopStrip"
 DE_LOCAL char kSavedFilters;              // container -> its filters before the invert filter was removed
 DE_LOCAL BOOL gEnabled, gScanQueued, gWriting, gInitialized;
-DE_LOCAL IMP gOrigSetHit, gOrigSetFilters;
+DE_LOCAL IMP gOrigSetHit, gOrigSetFilters, gOrigSendEvent;
 DE_LOCAL int gCount, gStrips, gRefreshes, gTopChecks, gTopMisses, gTopErrors;
 DE_LOCAL NSMutableArray *gCovered;        // [window, container, hit layer] of every covered island
 DE_LOCAL NSMutableArray *gStripItems;     // [container, strip] of every top-row strip in place
 DE_LOCAL NSMutableArray *gStripNext;      // the same, collected by the scan in progress
 DE_LOCAL id gObserver;
+DE_LOCAL NSWindow *gRedirect;         // island window that receives the click in progress (not retained)
 
 typedef int (*FindWindowFn)(int, int, int, int, const CGPoint *, CGPoint *, uint32_t *, int *);
 DE_LOCAL int (*gMainConnection)(void);
@@ -960,6 +1205,70 @@ DE_LOCAL void hookedSetFilters(CALayer *self, SEL _cmd, NSArray *filters) {
     }
 }
 
+// Mouse events on the top row of pixels need two corrections (macOS 27.3 beta 2):
+//  - WindowServer delivers most real clicks there to the menu bar window, even while it reports
+//    the island window as the owner of that point. Both windows belong to this process, so a
+//    click that reaches another window on the flat top row of a covered island is handed to the
+//    island window instead, together with the drag and mouse-up events that follow it.
+//  - With the pointer pushed against the top of the screen an event lies exactly on the window's
+//    top edge (y == height), a position the island's content does not accept. Events for the
+//    island window are therefore moved 0.5 pt into it.
+DE_LOCAL NSEvent *movedEvent(NSEvent *de_event, NSWindow *w, CGPoint de_point) {
+    NSEvent *de_moved = [NSEvent mouseEventWithType:de_event.type location:de_point
+        modifierFlags:de_event.modifierFlags timestamp:de_event.timestamp
+        windowNumber:w.windowNumber context:nil eventNumber:de_event.eventNumber
+        clickCount:de_event.clickCount pressure:de_event.pressure];
+    return de_moved ?: de_event;
+}
+
+DE_LOCAL CGPoint screenPoint(NSWindow *w, CGPoint de_point) {
+    return [w convertRectToScreen:(NSRect){de_point, {0, 0}}].origin;
+}
+
+// The island window whose covered container has its flat top row under this screen point.
+DE_LOCAL NSWindow *islandAtTopRow(CGPoint de_screen) {
+    for (NSArray *item in gCovered) {
+        NSWindow *w = item[0]; CALayer *container = item[1];
+        CALayer *root = islandRoot(w);
+        if (!root || !container.superlayer) continue;
+        NSRect r = [w convertRectToScreen:NSRectFromCGRect([container convertRect:container.bounds toLayer:root])];
+        CGFloat de_radius = container.cornerRadius;
+        if (fabs(de_screen.y - NSMaxY(r)) <= 0.5 && fabs(NSMaxY(r) - NSMaxY(w.frame)) <= 0.5 &&
+            de_screen.x >= r.origin.x + de_radius && de_screen.x <= r.origin.x + r.size.width - de_radius) return w;
+    }
+    return nil;
+}
+
+DE_LOCAL void hookedSendEvent(NSWindow *self, SEL _cmd, NSEvent *de_event) {
+    NSUInteger de_type = de_event.type;
+    NSWindow *de_target = self;
+    if (gEnabled && de_type >= 1 && de_type <= 7) {         // mouse down/up/moved/dragged
+        BOOL de_island = self.level == 26 && self.frame.size.height >= 200;
+        if (!de_island && de_type == 1) {                   // left mouse down in another window
+            gRedirect = islandAtTopRow(screenPoint(self, de_event.locationInWindow));
+            if (gRedirect) de_target = gRedirect;
+        } else if (!de_island && gRedirect && (de_type == 2 || de_type == 6)) {
+            de_target = gRedirect;                          // the drag and mouse-up of that click
+            if (de_type == 2) gRedirect = nil;
+        } else if (de_type == 1 || de_type == 2) {
+            gRedirect = nil;
+        }
+        if (de_target != self || de_island) {
+            CGPoint de_point = de_event.locationInWindow;
+            if (de_target != self) {
+                CGPoint de_screen = screenPoint(self, de_point);
+                de_point = CGPointMake(de_screen.x - de_target.frame.origin.x, de_screen.y - de_target.frame.origin.y);
+            }
+            CGFloat de_top = de_target.frame.size.height - 0.5;
+            if (de_target != self || de_point.y > de_top) {
+                if (de_point.y > de_top) de_point.y = de_top;
+                de_event = movedEvent(de_event, de_target, de_point);
+            }
+        }
+    }
+    ((void (*)(id, SEL, NSEvent *))gOrigSendEvent)(de_target, _cmd, de_event);
+}
+
 int dynamic_enabler_top_hit(int enable);
 // Every 0.5 s: check the click shapes WindowServer has from the previous pass, then cover
 // layers that were rebuilt without going through the hooked setters.
@@ -987,7 +1296,9 @@ int dynamic_enabler_top_hit(int enable) {
     if (!gInitialized) {
         Method hitMethod = class_getInstanceMethod([CALayer class], NSSelectorFromString(@"setHitTestsAsOpaque:"));
         Method filterMethod = class_getInstanceMethod([CALayer class], @selector(setFilters:));
-        if (!validSetter(hitMethod, @encode(BOOL)[0]) || !validSetter(filterMethod, '@')) return -2;
+        Method sendMethod = class_getInstanceMethod([NSWindow class], @selector(sendEvent:));
+        if (!validSetter(hitMethod, @encode(BOOL)[0]) || !validSetter(filterMethod, '@') ||
+            !validSetter(sendMethod, '@')) return -2;
         void *sky = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY);
         if (!sky) return -3;
         gMainConnection = (int (*)(void))dlsym(sky, "SLSMainConnectionID");
@@ -1007,6 +1318,7 @@ int dynamic_enabler_top_hit(int enable) {
         gObserver = [[de_class alloc] init];
         gOrigSetHit = method_setImplementation(hitMethod, (IMP)hookedSetHit);
         gOrigSetFilters = method_setImplementation(filterMethod, (IMP)hookedSetFilters);
+        gOrigSendEvent = method_setImplementation(sendMethod, (IMP)hookedSendEvent);
         [NSWorkspace.sharedWorkspace.notificationCenter addObserver:gObserver selector:@selector(tick:)
             name:NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification object:nil];
         NSTimer *de_timer = [NSTimer timerWithTimeInterval:0.5 target:gObserver selector:@selector(tick:) userInfo:nil repeats:YES];
@@ -1080,7 +1392,7 @@ def __lldb_init_module(debugger, unused):
             covered = evaluate('dynamic_enabler_top_hit(1)')
         if covered < 0:
             raise RuntimeError({-1: "installation must run on the main thread",
-                                -2: "required CALayer setters are missing or their ABI changed",
+                                -2: "required CALayer or NSWindow methods are missing or their ABI changed",
                                 -3: "WindowServer hit-test functions are unavailable",
                                 -4: "could not register the top-edge control class"}.get(covered, "native installation failed"))
         result = {"ok": True, "covered": covered}
@@ -1168,14 +1480,36 @@ CLIENT_MIN_SIDE = {
     "com.apple.screencaptureui.agent": 90.0,
 }
 
-# Clients that do not size their panel with .frame(): process name -> (module,
-# [(movz address, movk address, register, original instructions)], side width).
-# AirDrop: 0x100088d4c returns the panel width (274 for several items, 234 for one). Its
+# Clients that do not size their panel with .frame(): process name -> (module, binary,
+# stock widths, register, side width). Each width is loaded once with `movz reg ; movk reg`.
+# AirDrop: one function returns the panel width (274 for several items, 234 for one). Its
 # thumbnail needs 94 pt on each side to clear the notch.
 CLIENT_EXTRAS = {
-    "airdropui": ("AirDropUI", [(0x100089058, 0x10008905C, 8, ("0800c4d2", "280ee8f2")),
-                                (0x1000892E8, 0x1000892EC, 8, ("0800c8d2", "a80de8f2"))], 94.0),
+    "airdropui": ("AirDropUI", AIRDROPUI, (274.0, 234.0), 8, 94.0),
 }
+EXTRA_JOBS = {"com.apple.sharing.airdropui": "/System/Library/CoreServices/AirDropUI.app"}  # launchd label -> app
+EXTRA_SITES = {}    # located sites per client, reused after the first lookup
+
+
+def extra_sites(key):
+    """-> [(movz address, movk address, register, original instructions)], or None if the
+    widths are not each loaded exactly once, in one function, in the installed binary."""
+    if key not in EXTRA_SITES:
+        _, path, widths, reg, _ = CLIENT_EXTRAS[key]
+        sites = []
+        try:
+            with open(path, "rb") as f:
+                m = MachO(arm64e_slice(f.read(), os.path.basename(path)))
+            for width in widths:
+                origs = mov_double(reg, width)
+                at = one(f"width {width:g}", m.find([int.from_bytes(bytes.fromhex(h), "little") for h in origs]))
+                sites.append((at, at + 4, reg, origs))
+            if len({m.function_start(site[0]) for site in sites}) != 1:
+                sites = None
+        except (OSError, SignatureError, KeyError, IndexError, struct.error, SystemExit):
+            sites = None
+        EXTRA_SITES[key] = sites
+    return EXTRA_SITES[key]
 
 
 def frame_params(notch_w, neutral=False):
@@ -1195,9 +1529,9 @@ def client_params(ident, params):
 def client_extras(name, params, neutral=False):
     """-> [module, [[address, original, new], ...]] or None. neutral=True restores the originals."""
     key = name.rsplit(".", 1)[-1]
-    if key not in CLIENT_EXTRAS:
+    if key not in CLIENT_EXTRAS or not extra_sites(key):
         return None
-    mod, sites, side = CLIENT_EXTRAS[key]
+    mod, side, sites = CLIENT_EXTRAS[key][0], CLIENT_EXTRAS[key][-1], extra_sites(key)
     width = params["w_tall"] - 2 * TALL_SIDE + 2 * side
     items = []
     for a_movz, a_movk, reg, origs in sites:
@@ -1356,16 +1690,81 @@ def __lldb_init_module(debugger, d):
 '''
 
 # Battery banners (system banners shown by ControlCenter, not Live Activities). The expanded size
-# is fixed in a SystemBannerUI function used only by the battery banners (0x2b0969f3c): charging
-# 220 x 50 and low battery 300 x 60. Both branches load the width with `adrp x8 ; ldr d0, [x8, #...]`,
+# is fixed in a SystemBannerUI function used only by the battery banners: charging 220 x 50 and
+# low battery 300 x 60. Both branches load the width with `adrp x8 ; ldr d0, [x8, #...]`,
 # which is replaced by `movz x8, #hi, lsl #48 ; fmov d0, x8`. Only the top 16 bits can be set, so the
 # width is the representable value (16 pt steps) closest to notch width + 2 x side width.
 # The 220 and 300 constants themselves are shared with other banner layouts and are not changed.
 BANNER_MODULE = "SystemBannerUI"
-BANNER_SITES = [   # (adrp address, original instructions, side width)
-    (0x2B0969F9C, ("480200f0", "006945fd"), 80.5),      # charging 220 x 50: stock side width (220 - 59) / 2
-    (0x2B0969F74, ("480200b0", "005d43fd"), MIN_SIDE),  # low battery 300 x 60: single row, as for timers
+BANNER_FRAMEWORK = f"/System/Library/PrivateFrameworks/{BANNER_MODULE}.framework/{BANNER_MODULE}"
+BANNER_WIDTHS = [   # (stock width, side width)
+    (220.0, 80.5),      # charging 220 x 50: stock side width (220 - 59) / 2
+    (300.0, MIN_SIDE),  # low battery 300 x 60: single row, as for timers
 ]
+BANNER_SITES = []   # [(adrp address, original instructions, side width)], see banner_sites()
+
+
+def locate_banner_sites():
+    """Prints the two width loads as JSON [[address, [adrp, ldr]], ...] in the order of BANNER_WIDTHS.
+
+    SystemBannerUI exists only in the dyld shared cache, which is mapped at the same addresses
+    in every process, so the code is read from this process's own memory. Runs in a child
+    process (--banner-sites) because it loads the framework and reads raw memory."""
+    import ctypes
+    lib = ctypes.CDLL(None)
+    ctypes.CDLL(BANNER_FRAMEWORK)
+    lib._dyld_get_image_name.restype = ctypes.c_char_p
+    lib._dyld_get_image_header.restype = ctypes.c_void_p
+    lib._dyld_get_image_vmaddr_slide.restype = ctypes.c_long
+    lib._dyld_get_shared_cache_range.restype = ctypes.c_void_p
+    length = ctypes.c_size_t()
+    cache0 = lib._dyld_get_shared_cache_range(ctypes.byref(length))
+    index = next(i for i in range(lib._dyld_image_count())
+                 if lib._dyld_get_image_name(i).endswith(("/" + BANNER_MODULE).encode()))
+    header, slide = lib._dyld_get_image_header(index), lib._dyld_get_image_vmaddr_slide(index)
+
+    p, text = header + 32, None
+    for _ in range(struct.unpack("<I", ctypes.string_at(header + 16, 4))[0]):
+        cmd, size = struct.unpack("<II", ctypes.string_at(p, 8))
+        if cmd == 0x19 and ctypes.string_at(p + 8, 16).rstrip(b"\0") == b"__TEXT":
+            for i in range(struct.unpack("<I", ctypes.string_at(p + 64, 4))[0]):
+                sect = p + 72 + 80 * i
+                if ctypes.string_at(sect, 16).rstrip(b"\0") == b"__text":
+                    text = struct.unpack("<QQ", ctypes.string_at(sect + 32, 16))
+        p += size
+    words = struct.unpack("<%dI" % (text[1] // 4), ctypes.string_at(text[0] + slide, text[1]))
+    found = {width: [] for width, _ in BANNER_WIDTHS}
+    for i in range(len(words) - 1):
+        w, w2 = words[i], words[i + 1]
+        if w & 0x9F00001F == 0x90000008 and w2 & 0xFFC003FF == 0xFD400100:     # adrp x8 ; ldr d0, [x8, #imm]
+            pc = text[0] + 4 * i
+            imm = (((w >> 5) & 0x7FFFF) << 2) | ((w >> 29) & 3)
+            literal = (pc & ~0xFFF) + ((imm - ((imm & 0x100000) << 1)) << 12) + ((w2 >> 10) & 0xFFF) * 8 + slide
+            if cache0 <= literal <= cache0 + length.value - 8:
+                value = struct.unpack("<d", ctypes.string_at(literal, 8))[0]
+                if value in found:
+                    found[value].append([pc, [enc(w).hex(), enc(w2).hex()]])
+    for width, hits in found.items():
+        one(f"banner width {width:g}", [pc for pc, _ in hits])
+    sites = [hits[0] for hits in found.values()]
+    if abs(sites[0][0] - sites[1][0]) > 0x100:
+        raise SignatureError("banner widths are not in one function")
+    print("BANNER_SITES " + json.dumps(sites))
+
+
+def banner_sites():
+    """Locates the battery banner sites once. An empty list means they were not found."""
+    if not BANNER_SITES:
+        try:
+            out = subprocess.run([sys.executable, os.path.abspath(__file__), "--banner-sites"], text=True,
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=60).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            out = ""
+        found = re.search(r"^BANNER_SITES (.*)$", out, re.M)
+        if found:
+            BANNER_SITES.extend((addr, tuple(orig), side) for (addr, orig), (_, side)
+                                in zip(json.loads(found.group(1)), BANNER_WIDTHS))
+    return BANNER_SITES
 
 BANNER_LLDB = r"""
 import json, lldb
@@ -1450,10 +1849,10 @@ def control_center_pid():
 
 def patch_banner(notch_w, neutral=False):
     pid = control_center_pid()
-    if not pid:
+    if not pid or not banner_sites():
         return False
     items = [[addr, "".join(orig), "".join(orig if neutral else banner_words(notch_w, side))]
-             for addr, orig, side in BANNER_SITES]
+             for addr, orig, side in banner_sites()]
     return "BANNER_OK" in run_lldb_module(pid, "island_banner", BANNER_LLDB, "island_banner " + json.dumps(items))
 
 
@@ -1482,10 +1881,33 @@ def live_activity_clients(last="12h"):
                              "--predicate", CLIENT_LOG_PREDICATE).stdout)
 
 
+def extra_clients(launch=False):
+    """Running launchd agents with dedicated patches -> {pid: label}.
+
+    These agents start on demand (AirDropUI with the first transfer) and lay out their first
+    panel before a patch can arrive. launch=True starts them ahead of time for that reason."""
+    found = {}
+    for label, app in EXTRA_JOBS.items():
+        job = run("launchctl", "print", f"{gui_domain()}/{label}")
+        match = re.search(r"^\s*pid = (\d+)$", job.stdout, re.M)
+        if launch and job.returncode == 0 and not match:
+            # launchctl cannot start these agents; opening the app starts the same launchd job
+            # in the background without showing anything.
+            run("open", "-gj", app)
+            time.sleep(1)
+            job = run("launchctl", "print", f"{gui_domain()}/{label}")
+            match = re.search(r"^\s*pid = (\d+)$", job.stdout, re.M)
+        if job.returncode == 0 and match:
+            found[int(match.group(1))] = label
+    return found
+
+
 def patch_clients(notch_w, neutral=False, report=print):
     params = frame_params(notch_w, neutral)
     done = "restored" if neutral else "patched"
-    for pid, name in live_activity_clients().items():
+    clients = live_activity_clients()
+    clients.update(extra_clients(launch=not neutral))
+    for pid, name in clients.items():
         status = patch_frames(pid, params, name, neutral)
         if status == "skip":        # recycled pid or non-SwiftUI process; not a real client
             continue
@@ -1546,6 +1968,7 @@ def run_watcher(mba_pid):
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
     try:
         handle(live_activity_clients())
+        handle(extra_clients(launch=True))
         check_banner()
         while True:
             try:
@@ -1554,6 +1977,7 @@ def run_watcher(mba_pid):
                 note("MenuBarAgent has exited; exiting.")
                 return
             check_banner()
+            handle(extra_clients())
             if select.select([stream.stdout], [], [], 5)[0]:
                 line = stream.stdout.readline()
                 if not line:
@@ -1669,7 +2093,10 @@ def restart_siri_ai():
 
 
 def enable(layout, watch, restart_siri=False, report=print):
-    patches, geometry = build_patches(layout)
+    patches, geometry, sites = build_patches(layout)
+    if not sites.verified:
+        report(f"Note: this macOS build ({run('sw_vers', '-buildVersion').stdout.strip()}) has not been "
+               "tested. The patch sites were located by their code signatures.")
     restore = set_defaults()
 
     # Clients are patched first: expanded views are rebuilt when MenuBarAgent recreates its scenes.
@@ -1776,6 +2203,7 @@ def parse_args():
                         help="do not start the background helper for clients that start later")
     parser.add_argument("--watcher", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--login", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--banner-sites", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
@@ -1803,6 +2231,9 @@ def main():
 
     if args.watcher:
         run_watcher(args.watcher)
+        return
+    if args.banner_sites:
+        locate_banner_sites()
         return
 
     check_sip()
