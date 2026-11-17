@@ -37,7 +37,7 @@ macOS 27（27.3 以降）の MenuBarAgent には Dynamic Island の実装が含�
 - **有効化。** MenuBarAgent は `IsAppleInternalBuild()` チェックで保護された `EmulateCenterHUD` と `ShowSoftwareNotch` の 2 つの環境設定を読み取ります。スクリプトはこれらの環境設定を設定し、2 つのガード命令を `nop` に置き換えます。
 - **ノッチの配置。** 標準の Dynamic Island は、メニューバーの下にある仮想的な 59 × 34 pt のセンサー領域を基準に描画されます。スクリプトはこの矩形を返す関数を小さなコード領域にリダイレクトし、実行時に `NSScreen` から実際のノッチ矩形を読み取るようにします。
 - **パネル幅。** 各展開パネルの幅は、それをレンダリングするクライアントプロセス内で固定されています。スクリプトはこれらのプロセス内の SwiftUI フレーム初期化関数をフックし、展開範囲の幅を置き換えます。特殊なサイズ設定を持つクライアント（AirDrop、ControlCenter のバッテリーバナー）には専用パッチが適用されます。
-- **バックグラウンドヘルパー。** タイマープロセスなどの Live Activity クライアントはオンデマンドで起動します。ヘルパージョブ（`local.dynamic-island.watcher`）が MenuBarAgent ログを監視し、新しいクライアントが現れるとパッチを適用します。MenuBarAgent の終了時に一緒に終了します。ログ：`~/Library/Logs/dynamic_island_watcher.log`。
+- **バックグラウンドヘルパー。** タイマープロセスなどの Live Activity クライアントはオンデマンドで起動します。ヘルパージョブ（`local.dynamic-island.watcher`）が MenuBarAgent ログを監視し、新しいクライアントが現れるとパッチを適用します。MenuBarAgent の終了時に一緒に終了します。ログ：`~/Library/Logs/dynamic_island_watcher.log`。 内蔵ディスプレイも監視し、解像度が変わったり蓋を開閉したりすると、新しいノッチサイズで全パッチを再適用します（ノッチが見えない場合は `classic`）。MenuBarAgent が一度再起動し、約 20 秒でアイランドが戻ります。
 - **ログイン時の有効化。** スクリプトは自身を `~/Library/Application Support/DynamicEnabler/` にコピーし、LaunchAgent（`local.dynamic-island.autostart`）をインストールして、ログインごとにパッチを再適用できます。ログ：`~/Library/Logs/dynamic_island_autostart.log`。
 
 すべてのパッチはメモリ内でのみ行われます。システムボリューム上のファイルは変更されません。ログイン時の有効化が有効になっていない限り、MenuBarAgent または Mac を再起動するとパッチは削除されます。
@@ -47,7 +47,7 @@ macOS 27（27.3 以降）の MenuBarAgent には Dynamic Island の実装が含�
 | 要件 | 詳細 |
 | --- | --- |
 | macOS | 27.3 beta。ビルド 26C5035r（beta 1）と 26C5047e（beta 2）でテスト済み。27.2 以前には対応していません。パッチ箇所はインストール済みバイナリ内のコードシグネチャで特定するため、以降のビルドでも更新なしで動作する可能性があります。シグネチャがちょうど 1 回一致しない場合、スクリプトは何も変更せずに停止します。 |
-| ハードウェア | ノッチ付き MacBook。内蔵ディスプレイが有効である必要があります。 |
+| ハードウェア | すべての Mac。ノッチ付きディスプレイが有効（ノッチ付き MacBook で蓋が開いている）ならアイランドをノッチに合わせます。ない場合（ノッチなしの Mac、蓋を閉じている、外部ディスプレイのみ）は自動的に `--layout classic` に切り替えます。ノッチなし環境は未テストです。 |
 | SIP | システム整合性保護のデバッグ制限を解除する必要があります。復旧モードで `csrutil enable --without debug` を実行してください（推奨。SIP のその他の保護は有効のままです）。SIP を完全に無効にしても（`csrutil disable`）動作します。 |
 | ツール | 最新の Xcode beta を `sudo xcode-select -s /Applications/Xcode-beta.app/Contents/Developer` で選択してください。macOS 27 対応のコマンドラインツールでも動作します。古いツール（環境によっては `xcode-select --install` で入るもの）では lldb のアタッチ時にクラッシュします。 |
 | デバッグ権限 | パスワードなしのデバッグ：`sudo DevToolsSecurity -enable` を実行し、ユーザーが `_developer` グループに属している必要があります。そうでないと lldb は「Developer Tools Access」ダイアログを待ち続けます。 |
@@ -80,7 +80,7 @@ python3 enable_dynamic_island.py --disable                 # 無効化し、ロ�
 | --- | --- |
 | `--layout notch` | デフォルト。展開表示がノッチを回り込みます。 |
 | `--layout below` | 展開表示がノッチの下に標準幅で表示されます。 |
-| `--layout classic` | 有効化のみ。アイランドはメニューバー下の標準位置に留まります。 |
+| `--layout classic` | 有効化のみ。アイランドはメニューバー下の標準位置に留まります。 ノッチ付きディスプレイが有効でないときは自動的にこれが使われます。 |
 | `--no-watch` | バックグラウンドヘルパーを起動しません。 |
 | `--restart-siri` | パッチ適用後に Siri AI を再起動し、Siri AI と Spotlight を島に表示します（`--autostart` と併用するとログイン時にも実行）。Siri AI がオフまたは利用できない場合は影響しません。 |
 | `--no-restart-siri` | Siri AI をそのままにします。どちらも指定しない場合は、ログイン項目の現在の設定を引き継ぎます。 |
@@ -95,7 +95,7 @@ python3 enable_dynamic_island.py --disable
 
 ## 既知の制限
 
-- ノッチ付き MacBook でのみテストされています。外部ディスプレイの配置計算は内蔵ディスプレイに基づいています。
+- アイランドはメインディスプレイにのみ表示されます（サブディスプレイは標準どおりメニューバーにライブアクティビティを表示）。内蔵のノッチ付きディスプレイではノッチに合わせ、他のディスプレイ（外部、Sidecar の iPad）がメインのときはそこで `classic` の位置になります。メインディスプレイの切り替えは即座に反映されます。内蔵ディスプレイの解像度変更や蓋の開閉はバックグラウンドヘルパーがパッチを再適用して対応します（`--no-watch` では無効）。展開表示の幅は他のディスプレイでもノッチ用に広げたままです。
 - WidgetKit でレンダリングされたサードパーティの Live Activity は、アプリが選択した幅を保持します。
 - 低バッテリーバナーの幅は画面上で実際に検証されていません。
 

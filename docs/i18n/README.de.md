@@ -37,7 +37,7 @@ macOS 27 (27.3 und höher) enthält eine Dynamic Island-Implementierung in MenuB
 - **Aktivierung.** MenuBarAgent liest zwei Einstellungen, `EmulateCenterHUD` und `ShowSoftwareNotch`, die jeweils durch eine `IsAppleInternalBuild()`-Prüfung geschützt sind. Das Skript setzt beide Einstellungen und ersetzt die beiden Schutzanweisungen durch `nop`-Befehle.
 - **Notch-Geometrie.** Die Standard-Dynamic Island wird um einen virtuellen 59 × 34 pt Sensorbereich unterhalb der Menüleiste gezeichnet. Die Funktionen, die dieses Rechteck zurückgeben, werden zu kleinen Code-Höhlen umgeleitet, die das echte Notch-Rechteck zur Laufzeit aus `NSScreen` auslesen.
 - **Panel-Breiten.** Die Breite jedes erweiterten Panels ist im Client-Prozess, der es rendert, fest vorgegeben. Das Skript fängt SwiftUI-Frame-Initialisierer in diesen Prozessen ab und ersetzt Breiten im erweiterten Bereich. Clients mit ungewöhnlicher Größenanpassung (AirDrop, Batteriebanner in ControlCenter) erhalten dedizierte Patches.
-- **Hintergrund-Helfer.** Live-Activity-Clients wie der Timer-Prozess starten bei Bedarf. Ein Helfer-Job (`local.dynamic-island.watcher`) überwacht das MenuBarAgent-Protokoll und patcht neue Clients, sobald sie erscheinen. Er wird beendet, wenn MenuBarAgent beendet wird. Protokoll: `~/Library/Logs/dynamic_island_watcher.log`.
+- **Hintergrund-Helfer.** Live-Activity-Clients wie der Timer-Prozess starten bei Bedarf. Ein Helfer-Job (`local.dynamic-island.watcher`) überwacht das MenuBarAgent-Protokoll und patcht neue Clients, sobald sie erscheinen. Er wird beendet, wenn MenuBarAgent beendet wird. Protokoll: `~/Library/Logs/dynamic_island_watcher.log`. Außerdem überwacht er das integrierte Display: Ändert sich die Auflösung oder wird der Deckel geöffnet oder geschlossen, wendet er alle Patches mit der neuen Notch-Größe erneut an (oder `classic`, wenn keine Notch sichtbar ist). MenuBarAgent startet dabei einmal neu; die Insel erscheint nach etwa 20 Sekunden wieder.
 - **Anmeldeaktivierung.** Das Skript kann sich selbst nach `~/Library/Application Support/DynamicEnabler/` kopieren und einen LaunchAgent (`local.dynamic-island.autostart`) installieren, der die Patches bei jeder Anmeldung erneut anwendet. Protokoll: `~/Library/Logs/dynamic_island_autostart.log`.
 
 Alle Patches erfolgen nur im Speicher. Auf dem System-Volume wird nichts geändert. Ein Neustart von MenuBarAgent oder des Mac entfernt die Patches, es sei denn, die Anmeldeaktivierung ist aktiviert.
@@ -47,7 +47,7 @@ Alle Patches erfolgen nur im Speicher. Auf dem System-Volume wird nichts geände
 | Anforderung | Details |
 | --- | --- |
 | macOS | 27.3 beta, getestet mit den Builds 26C5035r (Beta 1) und 26C5047e (Beta 2). 27.2 und älter werden nicht unterstützt. Die Patch-Stellen werden anhand von Code-Signaturen in den installierten Binärdateien gesucht, sodass spätere Builds ohne Update funktionieren können; das Skript stoppt ohne Änderungen, wenn eine Signatur nicht genau einmal passt. |
-| Hardware | MacBook mit Notch; das integrierte Display muss aktiv sein. |
+| Hardware | Jeder Mac. Mit aktivem Notch-Display (MacBook mit Notch, Deckel offen) wird die Insel an die Notch angepasst; ohne (Mac ohne Notch, Deckel zu, nur externe Displays) wechselt das Skript automatisch zu `--layout classic`. Ohne Notch ungetestet. |
 | SIP | Die Debugging-Einschränkung des Systemintegritätsschutzes muss aufgehoben sein: Im Wiederherstellungsmodus `csrutil enable --without debug` ausführen (empfohlen; der übrige SIP bleibt aktiv). Ein vollständig deaktivierter SIP (`csrutil disable`) funktioniert ebenfalls. |
 | Tools | Die neueste Xcode-Beta, ausgewählt mit `sudo xcode-select -s /Applications/Xcode-beta.app/Contents/Developer`. Command Line Tools für macOS 27 funktionieren ebenfalls; ältere Tools (auf manchen Systemen auch die von `xcode-select --install`) stürzen beim Anhängen von lldb ab. |
 | Debugging | Debugging ohne Passwort: `sudo DevToolsSecurity -enable` ausführen, und der Benutzer muss in der Gruppe `_developer` sein. Sonst wartet lldb auf den Dialog „Developer Tools Access“. |
@@ -80,7 +80,7 @@ Zusätzliche Optionen:
 | --- | --- |
 | `--layout notch` | Standard. Erweiterte Darstellungen umschließen die Notch. |
 | `--layout below` | Erweiterte Darstellungen erscheinen unterhalb der Notch in Standardbreiten. |
-| `--layout classic` | Nur Aktivierung; Insel bleibt an der Standardposition unterhalb der Menüleiste. |
+| `--layout classic` | Nur Aktivierung; Insel bleibt an der Standardposition unterhalb der Menüleiste. Wird automatisch verwendet, wenn kein Display mit Notch aktiv ist. |
 | `--no-watch` | Hintergrund-Helfer nicht starten. |
 | `--restart-siri` | Startet Siri AI nach dem Patchen neu, damit Siri AI und Spotlight in der Insel erscheinen (mit `--autostart` auch bei der Anmeldung). Keine Wirkung, wenn Siri AI ausgeschaltet oder nicht verfügbar ist. |
 | `--no-restart-siri` | Siri AI unverändert lassen. Ohne eine der beiden Optionen bleibt die aktuelle Einstellung des Anmeldeobjekts erhalten. |
@@ -95,7 +95,7 @@ Stoppt den Hintergrund-Helfer, entfernt die Anmeldeaktivierung, stellt Client-Pr
 
 ## Bekannte Einschränkungen
 
-- Nur auf MacBook mit Notch getestet; die Geometrie externer Displays basiert nur auf dem integrierten Display.
+- Die Insel erscheint nur auf dem Hauptdisplay (Nebendisplays zeigen Live-Aktivitäten wie gewohnt in der Menüleiste). Auf dem integrierten Notch-Display passt sie sich der Notch an; ist ein anderes Display (extern, Sidecar-iPad) Hauptdisplay, nutzt sie dort die `classic`-Position. Ein Wechsel des Hauptdisplays wirkt sofort. Auflösungsänderungen des integrierten Displays und Öffnen/Schließen des Deckels übernimmt der Hintergrund-Helfer, der die Patches erneut anwendet (nicht mit `--no-watch`). Erweiterte Ansichten behalten auf anderen Displays die verbreiterten Notch-Breiten.
 - Von WidgetKit gerenderte Drittanbieter-Live-Activities behalten die von ihren Apps gewählten Breiten bei.
 - Die Breite des Batterie-Low-Banners wurde nicht auf dem Bildschirm überprüft.
 

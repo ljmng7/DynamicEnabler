@@ -37,7 +37,7 @@ macOS 27.3 及更高版本的 MenuBarAgent 内置了灵动岛实现，但仅在�
 - **激活。** MenuBarAgent 通过 `IsAppleInternalBuild()` 检查来保护 `EmulateCenterHUD` 和 `ShowSoftwareNotch` 两个偏好设置。脚本设置这两个偏好，并将对应的检查指令替换为 `nop`。
 - **刘海几何。** 系统原生灵动岛以菜单栏下方一块 59 × 34 pt 的虚拟区域为基准绘制。脚本将返回该矩形的函数重定向到代码洞，让其在运行时从 `NSScreen` 读取真实的刘海矩形。
 - **面板宽度。** 每个展开面板的宽度固定在各自的客户端进程中。脚本钩住这些进程中的 SwiftUI frame 初始化函数，将展开范围内的宽度替换为适配刘海的值。对于宽度特殊的客户端（AirDrop、ControlCenter 中的电池横幅），使用专用补丁处理。
-- **后台守护。** 计时器等 Live Activity 客户端按需启动。守护任务 `local.dynamic-island.watcher` 监控 MenuBarAgent 日志，在新客户端接入时自动打补丁，并在 MenuBarAgent 退出时一同退出。日志：`~/Library/Logs/dynamic_island_watcher.log`。
+- **后台守护。** 计时器等 Live Activity 客户端按需启动。守护任务 `local.dynamic-island.watcher` 监控 MenuBarAgent 日志，在新客户端接入时自动打补丁，并在 MenuBarAgent 退出时一同退出。日志：`~/Library/Logs/dynamic_island_watcher.log`。 它还会盯着内置屏：分辨率变化或开合盖时，按新的刘海尺寸重新打全部补丁（看不到刘海时用 `classic`）。MenuBarAgent 会重启一次，岛大约 20 秒后恢复。
 - **登录自启。** 脚本可将自身复制到 `~/Library/Application Support/DynamicEnabler/`，并安装 LaunchAgent `local.dynamic-island.autostart`，在每次登录时自动重新应用补丁。日志：`~/Library/Logs/dynamic_island_autostart.log`。
 
 所有补丁均在内存中进行，不修改系统卷上的任何文件。除非启用了登录自启，重启 MenuBarAgent 或 Mac 后补丁即失效。
@@ -47,7 +47,7 @@ macOS 27.3 及更高版本的 MenuBarAgent 内置了灵动岛实现，但仅在�
 | 要求 | 说明 |
 | --- | --- |
 | macOS | 27.3 beta，已在 build 26C5035r（beta 1）和 26C5047e（beta 2）上测试；不支持 27.2 及更早版本。补丁位置按代码特征在本机二进制中查找，后续版本可能无需更新即可使用；任何特征不是恰好命中一次时，脚本会停止且不做任何改动。 |
-| 硬件 | 带刘海的 MacBook；内置显示器必须处于激活状态。 |
+| 硬件 | 任意 Mac。有激活的刘海显示器（带刘海的 MacBook 开盖）时，岛贴合刘海；没有时（无刘海的 Mac、合盖、仅外接显示器）自动切换为 `--layout classic`。无刘海环境尚未实测。 |
 | SIP | 必须解除系统完整性保护（SIP）的调试限制：在恢复模式中运行 `csrutil enable --without debug`（推荐，SIP 其余保护保持开启）。完全关闭 SIP（`csrutil disable`）也可以。 |
 | 工具 | 最新的 Xcode beta，并用 `sudo xcode-select -s /Applications/Xcode-beta.app/Contents/Developer` 切换过去。与 macOS 27 对应的命令行工具也可以；旧版工具（某些系统上 `xcode-select --install` 装的就是旧版）在 lldb 附加进程时会崩溃。 |
 | 调试权限 | 需要免密调试：执行 `sudo DevToolsSecurity -enable`，并且当前用户在 `_developer` 组中。否则 lldb 会一直等待“开发者工具访问”授权框。 |
@@ -80,7 +80,7 @@ python3 enable_dynamic_island.py --disable                 # 禁用并移除登�
 | --- | --- |
 | `--layout notch` | 默认。展开态环绕刘海显示。 |
 | `--layout below` | 展开态显示在刘海下方，保持系统原始宽度。 |
-| `--layout classic` | 仅激活，不调整位置，岛停留在菜单栏下方的默认位置。 |
+| `--layout classic` | 仅激活，不调整位置，岛停留在菜单栏下方的默认位置。没有激活的刘海显示器时自动使用此布局。 |
 | `--no-watch` | 不启动后台守护进程。 |
 | `--restart-siri` | 补丁完成后重启 Siri AI，让 Siri AI 和聚焦搜索上岛（配合 `--autostart` 时登录时也会执行）。Siri AI 未开启或不可用时无影响。 |
 | `--no-restart-siri` | 不动 Siri AI。两个选项都不传时，沿用登录项当前的设置。 |
@@ -95,7 +95,7 @@ python3 enable_dynamic_island.py --disable
 
 ## 已知限制
 
-- 仅在带刘海的 MacBook 上测试；外接显示器的几何计算基于内置显示器。
+- 岛只出现在主显示器上（副屏和原生系统一样，把实时活动放在菜单栏）。在内置刘海屏上贴合刘海；外接屏或随航 iPad 当主显示器时，岛在那块屏上用 `classic` 位置。切换主显示器即时生效。内置屏改分辨率、开合盖由后台守护自动重新打补丁（`--no-watch` 时不处理）。在其他屏上，展开面板仍保持为刘海加宽后的宽度。
 - WidgetKit 渲染的第三方 Live Activity 保持其应用自身设置的宽度。
 - 低电量横幅的加宽效果未经屏幕实际验证。
 

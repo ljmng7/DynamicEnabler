@@ -37,7 +37,7 @@ macOS 27(27.3 이상)의 MenuBarAgent에는 Dynamic Island 구현이 포함되�
 - **활성화.** MenuBarAgent는 `IsAppleInternalBuild()` 검사로 보호되는 `EmulateCenterHUD` 및 `ShowSoftwareNotch` 두 가지 환경설정을 읽습니다. 스크립트는 이러한 환경설정을 설정하고 두 가드 명령을 `nop`로 대체합니다.
 - **노치 배치.** 기본 Dynamic Island는 메뉴 막대 아래의 가상 59 × 34 pt 센서 영역을 기준으로 그려집니다. 스크립트는 이 사각형을 반환하는 함수를 작은 코드 영역으로 리디렉션하여 런타임에 `NSScreen`에서 실제 노치 사각형을 읽도록 합니다.
 - **패널 너비.** 각 확장 패널의 너비는 이를 렌더링하는 클라이언트 프로세스 내에서 고정됩니다. 스크립트는 이러한 프로세스 내의 SwiftUI 프레임 초기화 함수를 후킹하고 확장 범위의 너비를 대체합니다. 특수한 크기 설정을 가진 클라이언트(AirDrop, ControlCenter의 배터리 배너)에는 전용 패치가 적용됩니다.
-- **백그라운드 헬퍼.** 타이머 프로세스와 같은 Live Activity 클라이언트는 온디맨드로 시작됩니다. 헬퍼 작업(`local.dynamic-island.watcher`)이 MenuBarAgent 로그를 모니터링하고 새 클라이언트가 나타나면 패치를 적용합니다. MenuBarAgent가 종료되면 함께 종료됩니다. 로그: `~/Library/Logs/dynamic_island_watcher.log`.
+- **백그라운드 헬퍼.** 타이머 프로세스와 같은 Live Activity 클라이언트는 온디맨드로 시작됩니다. 헬퍼 작업(`local.dynamic-island.watcher`)이 MenuBarAgent 로그를 모니터링하고 새 클라이언트가 나타나면 패치를 적용합니다. MenuBarAgent가 종료되면 함께 종료됩니다. 로그: `~/Library/Logs/dynamic_island_watcher.log`. 내장 디스플레이도 감시하여 해상도가 바뀌거나 덮개를 열고 닫으면 새 노치 크기로 모든 패치를 다시 적용합니다(노치가 보이지 않으면 `classic`). MenuBarAgent가 한 번 재시작되며 약 20초 후 아일랜드가 돌아옵니다.
 - **로그인 시 활성화.** 스크립트는 자신을 `~/Library/Application Support/DynamicEnabler/`에 복사하고 LaunchAgent(`local.dynamic-island.autostart`)를 설치하여 로그인할 때마다 패치를 다시 적용할 수 있습니다. 로그: `~/Library/Logs/dynamic_island_autostart.log`.
 
 모든 패치는 메모리에서만 수행됩니다. 시스템 볼륨의 파일은 수정되지 않습니다. 로그인 시 활성화가 활성화되어 있지 않으면 MenuBarAgent 또는 Mac을 재시작하면 패치가 제거됩니다.
@@ -47,7 +47,7 @@ macOS 27(27.3 이상)의 MenuBarAgent에는 Dynamic Island 구현이 포함되�
 | 요구사항 | 세부사항 |
 | --- | --- |
 | macOS | 27.3 beta, 빌드 26C5035r(beta 1)와 26C5047e(beta 2)에서 테스트했습니다. 27.2 이하는 지원하지 않습니다. 패치 위치는 설치된 바이너리에서 코드 시그니처로 찾으므로 이후 빌드도 업데이트 없이 동작할 수 있으며, 시그니처가 정확히 한 번 일치하지 않으면 아무것도 변경하지 않고 스크립트가 중지됩니다. |
-| 하드웨어 | 노치가 있는 MacBook. 내장 디스플레이가 활성화되어 있어야 합니다. |
+| 하드웨어 | 모든 Mac. 노치 디스플레이가 활성화되어 있으면(노치가 있는 MacBook, 덮개 열림) 아일랜드를 노치에 맞추고, 없으면(노치 없는 Mac, 덮개 닫힘, 외부 디스플레이만) 자동으로 `--layout classic`으로 전환합니다. 노치 없는 환경은 테스트되지 않았습니다. |
 | SIP | 시스템 무결성 보호의 디버깅 제한을 해제해야 합니다. 복구 모드에서 `csrutil enable --without debug`를 실행하세요(권장, 나머지 SIP 보호는 유지됨). SIP를 완전히 비활성화(`csrutil disable`)해도 됩니다. |
 | 도구 | 최신 Xcode beta를 `sudo xcode-select -s /Applications/Xcode-beta.app/Contents/Developer`로 선택하세요. macOS 27용 명령줄 도구도 사용할 수 있습니다. 오래된 도구(일부 환경에서는 `xcode-select --install`로 설치되는 버전)는 lldb 연결 시 충돌합니다. |
 | 디버깅 권한 | 암호 없는 디버깅: `sudo DevToolsSecurity -enable`를 실행하고, 사용자가 `_developer` 그룹에 속해 있어야 합니다. 그렇지 않으면 lldb가 "Developer Tools Access" 대화 상자를 기다립니다. |
@@ -80,7 +80,7 @@ python3 enable_dynamic_island.py --disable                 # 비활성화하고 
 | --- | --- |
 | `--layout notch` | 기본값. 확장 표시가 노치를 감쌉니다. |
 | `--layout below` | 확장 표시가 노치 아래에 기본 너비로 표시됩니다. |
-| `--layout classic` | 활성화만. 아일랜드가 메뉴 막대 아래의 기본 위치에 유지됩니다. |
+| `--layout classic` | 활성화만. 아일랜드가 메뉴 막대 아래의 기본 위치에 유지됩니다. 노치 디스플레이가 활성화되어 있지 않으면 자동으로 사용됩니다. |
 | `--no-watch` | 백그라운드 헬퍼를 시작하지 않습니다. |
 | `--restart-siri` | 패치 후 Siri AI를 재시작하여 Siri AI와 Spotlight를 아일랜드에 표시합니다(`--autostart`와 함께 쓰면 로그인 시에도 실행). Siri AI가 꺼져 있거나 사용할 수 없으면 영향이 없습니다. |
 | `--no-restart-siri` | Siri AI를 그대로 둡니다. 둘 다 지정하지 않으면 로그인 항목의 현재 설정을 유지합니다. |
@@ -95,7 +95,7 @@ python3 enable_dynamic_island.py --disable
 
 ## 알려진 제한사항
 
-- 노치가 있는 MacBook에서만 테스트되었습니다. 외부 디스플레이 배치 계산은 내장 디스플레이를 기반으로 합니다.
+- 아일랜드는 주 디스플레이에만 표시됩니다(보조 디스플레이는 기본 macOS처럼 메뉴 막대에 실시간 현황을 표시). 내장 노치 디스플레이에서는 노치에 맞추고, 다른 디스플레이(외부, Sidecar iPad)가 주 디스플레이이면 그곳에서 `classic` 위치를 사용합니다. 주 디스플레이 전환은 즉시 반영됩니다. 내장 디스플레이의 해상도 변경과 덮개 열기/닫기는 백그라운드 헬퍼가 패치를 다시 적용해 처리합니다(`--no-watch` 사용 시 제외). 확장 패널은 다른 디스플레이에서도 넓힌 노치 너비를 유지합니다.
 - WidgetKit으로 렌더링된 타사 Live Activity는 앱이 선택한 너비를 유지합니다.
 - 저배터리 배너 너비는 화면에서 실제로 확인되지 않았습니다.
 

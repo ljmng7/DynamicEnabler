@@ -21,7 +21,8 @@ Overview
        - The square "software notch" window that ShowSoftwareNotch draws over the notch is
          reduced to zero size, so its corners no longer show around the rounded notch.
      Layout "below" keeps the stock 59 pt sensor hidden inside the notch and moves expanded
-     presentations below the notch instead. Layout "classic" only performs the activation.
+     presentations below the notch instead. Layout "classic" only performs the activation; it is
+     used automatically when no display with a notch is active.
      With the island at the top edge, a small module loaded into MenuBarAgent also makes the
      topmost row of pixels clickable (see "Top edge clicks" below).
 
@@ -63,7 +64,11 @@ Requirements
     code signature in the installed binaries, so other builds work as long as every signature
     still matches exactly once; otherwise nothing is changed. Every patch site is compared
     with its original bytes before writing.
-  - A MacBook Pro with a notch (the built-in display must be active).
+  - Any Mac. The layouts "notch" and "below" need an active display with a notch (a notched
+    MacBook with the lid open); without one the script uses layout "classic" instead. The island
+    is shown on the main display; on any display other than the built-in one it keeps the stock
+    ("classic") position. The background helper reapplies the patches when the built-in
+    display's resolution changes or the lid is opened or closed.
   - SIP's debugging restriction lifted ("csrutil enable --without debug" in Recovery), or SIP
     fully disabled. lldb cannot attach to system processes otherwise.
   - The latest Xcode beta, or Command Line Tools that match macOS 27 (for lldb, clang and
@@ -120,6 +125,7 @@ LOG_DIR = os.path.expanduser("~/Library/Logs")
 WATCHER_LOG = os.path.join(LOG_DIR, "dynamic_island_watcher.log")
 AUTOSTART_LOG = os.path.join(LOG_DIR, "dynamic_island_autostart.log")
 WATCHER_LABEL = "local.dynamic-island.watcher"
+REAPPLY_LABEL = "local.dynamic-island.reapply"
 AUTOSTART_LABEL = "local.dynamic-island.autostart"
 AUTOSTART_PLIST = os.path.expanduser(f"~/Library/LaunchAgents/{AUTOSTART_LABEL}.plist")
 LAYOUTS = ("notch", "below", "classic")
@@ -236,17 +242,18 @@ def check_lldb_attach():
 # ---------------------------------------------------------------------------------------------
 
 def notch_geometry():
-    """Returns (notch width, notch height) of the built-in display in points, or None."""
+    """Returns (notch width, notch height, screen width, height below the menu bar) of the
+    built-in display in points, or None. The last two identify that screen at runtime."""
     swift = r'''
 import AppKit
 for s in NSScreen.screens where s.safeAreaInsets.top > 0 {
     if let l = s.auxiliaryTopLeftArea, let r = s.auxiliaryTopRightArea {
-        print(r.minX - l.maxX, s.safeAreaInsets.top); break
+        print(r.minX - l.maxX, s.safeAreaInsets.top, s.frame.width, s.frame.height - s.safeAreaInsets.top); break
     }
 }
 '''
     out = run("xcrun", "swift", "-e", swift).stdout.split()
-    if len(out) != 2:
+    if len(out) != 4:
         return None
     # Rounded to 0.5 pt so that every derived constant can be loaded exactly with movz/movk.
     return tuple(round(float(v) * 2) / 2 for v in out)
@@ -296,6 +303,18 @@ def fmov_imm(d, value):
     raise ValueError(value)
 
 
+def adrp(pc, page, rd):
+    imm = (page - (pc & ~0xFFF)) >> 12
+    return 0x90000000 | ((imm & 3) << 29) | (((imm >> 2) & 0x7FFFF) << 5) | rd
+
+
+def adrp_page(pc, word):
+    """Target page of an adrp instruction at pc."""
+    imm = ((word >> 3) & 0x1FFFFC) | ((word >> 29) & 3)
+    imm -= (imm & 0x100000) << 1
+    return (pc & ~0xFFF) + (imm << 12)
+
+
 def fmov_d_x(d, x): return 0x9E670000 | (x << 5) | d
 def fabs(d, n): return 0x1E60C000 | (n << 5) | d
 def fcmp(n, m): return 0x1E602000 | (m << 16) | (n << 5)
@@ -335,7 +354,13 @@ EPILOGUE = [0xA8C17BFD, 0xD65F03C0]  # ldp x29, x30, [sp], #16 ; ret
 #                       both the expanded and the list item metrics; the cave returns a width that
 #                       leaves REMOTE_SIDE pt on each side of the notch. Clients request new content
 #                       after the change, which takes a few seconds.
-#   caves               six code caves in the zero padding at the end of the __TEXT segment
+#   caves               seven code caves in the zero padding at the end of the __TEXT segment
+#
+# Only the island on the built-in display fits the notch. The island is shown on the main display,
+# which may be an external display or a Sidecar iPad. The leaf receives the area of that screen
+# below the menu bar, (x, menu bar height, width, height); cave6 compares it with the built-in
+# screen and runs the stock leaf for any other screen. Only notch rectangles have y = 0, so the
+# getter caves change those and pass stock rectangles through unchanged.
 
 PACIBSP = 0xD503237F
 STOCK_SENSOR_W = 59.0
@@ -345,7 +370,8 @@ STOCK_SENSOR_W = 59.0
 NOTCH_MARGIN = 1.5
 REMOTE_WIDTH_ORIG = ("010080d2", "02008052", "0000ccd2", "e00ee8f2")
 REMOTE_SCALE, REMOTE_SIDE = 0.8, 72.0
-CAVE_SLOTS = (16, 16, 16, 16, 48, 16)       # instructions per cave
+CAVE_SLOTS = (16, 24, 24, 24, 48, 16, 48)       # instructions per cave
+CAVE_OFFSETS = tuple(sum(CAVE_SLOTS[:i]) * 4 for i in range(len(CAVE_SLOTS)))
 
 # Builds on which the result was tested, by the UUID of the arm64e MenuBarAgent image. On these
 # the located sites must equal the addresses below; other builds rely on the signatures alone.
@@ -598,9 +624,10 @@ def locate_sites(image):
     vmaddr, vmsize = m.segments["__TEXT"]
     end = max(a + n for a, n, *_ in m.sections.values() if vmaddr <= a < vmaddr + vmsize)
     cave = (end + 0xFF) & ~0xFF
-    if cave + 0x200 > vmaddr + vmsize or any(m.raw(cave, 0x200)):
+    size = sum(CAVE_SLOTS) * 4
+    if cave + size > vmaddr + vmsize or any(m.raw(cave, size)):
         raise SignatureError("no room for the code caves")
-    s.caves = tuple(cave + off for off in (0, 0x40, 0x80, 0xC0, 0x100, 0x1C0))
+    s.caves = tuple(cave + off for off in CAVE_OFFSETS)
     return s
 
 
@@ -627,12 +654,13 @@ def menubar_sites(image):
     return s
 
 
-def build_patches(layout):
-    """Returns ([(address, original bytes, new bytes)], (notch width, notch height) or None, sites)."""
+def build_patches(layout, geometry):
+    """Returns ([(address, original bytes, new bytes)], sites). geometry is the result of
+    notch_geometry() or None; layouts other than "classic" require it."""
     with open(MENUBARAGENT, "rb") as f:
         image = arm64e_slice(f.read())
     s = menubar_sites(image)
-    cave0, cave1, cave2, cave3, cave4, cave5 = s.caves
+    cave0, cave1, cave2, cave3, cave4, cave5, cave6 = s.caves
 
     def orig_word(addr):
         o = addr - 0x100000000
@@ -660,18 +688,16 @@ def build_patches(layout):
             c4[at] = 0x54000000 | ((len(c4) - at) << 5) | 0xA      # b.ge -> epilogue
         return c4 + EPILOGUE
 
-    geometry = notch_geometry()
     if layout == "classic":
         # Classic layout still needs to hide the software notch window
         if geometry:
-            add_caves({cave4: notch_window_cave(*geometry)})
+            add_caves({cave4: notch_window_cave(*geometry[:2])})
             for a in s.notch_window_sites:
                 patches.append((a, orig_word(a), enc(bl(a, cave4))))
-        return patches, None, s
+        return patches, s
 
-    if not geometry:
-        fail("No built-in display with a notch was found. Open the lid, or use --layout classic.")
-    real_notch_w, notch_h = geometry
+    assert geometry, "layouts other than classic need the notch geometry"
+    real_notch_w, notch_h, screen_w, area_h = geometry
     notch_w = real_notch_w - 2 * NOTCH_MARGIN
     below = layout == "below"
     sensor_w = STOCK_SENSOR_W if below else notch_w
@@ -685,28 +711,50 @@ def build_patches(layout):
           + load_double(9, notch_h) + [fmov_d_x(1, 8), ins_hi_x(1, 9)])
     c0.append(b(cave0 + 4 * len(c0), s.rect_init))
 
+    # cave6 enters the leaf: cave0 for the built-in screen, whose area below the menu bar is
+    # (x, notch height, screen width, area height); the stock leaf for all other screens.
+    leaf_word = int.from_bytes(orig_word(s.leaf), "little")
+    if leaf_word & 0x9F00001F != 0x90000008:
+        fail("The sensor rectangle function has an unexpected first instruction. No changes were made.")
+    c6, skips = [fmov_imm(18, 0.5)], []
+    for value, lane in ((screen_w, [fsub(16, 1, 17)]), (area_h, [dup_hi(16, 1), fsub(16, 16, 17)]),
+                        (notch_h, [dup_hi(16, 0), fsub(16, 16, 17)])):
+        c6 += load_double(9, value) + [fmov_d_x(17, 9)] + lane + [fabs(16, 16), fcmp(16, 18)]
+        skips.append(len(c6)); c6.append(None)
+    c6.append(b(cave6 + 4 * len(c6), cave0))
+    for at in skips:
+        c6[at] = 0x54000000 | ((len(c6) - at) << 5) | 0xA         # b.ge -> stock leaf
+    c6.append(adrp(cave6 + 4 * len(c6), adrp_page(s.leaf, leaf_word), 8))
+    c6.append(b(cave6 + 4 * len(c6), s.leaf + 4))
+
+    # Getter caves change only notch rectangles (y = 0, or 1 for inset variants). Stock
+    # rectangles start 7 pt below the safe area (y >= 7, also on screens without a menu bar
+    # inset) and are returned unchanged.
+    def getter_cave(base, getter, body):
+        c = PROLOGUE + [bl(base + 8, getter), dup_hi(16, 0), fmov_imm(18, 4.0), fcmp(16, 18), None]
+        c += body
+        c[len(PROLOGUE) + 4] = 0x54000000 | ((len(c) - len(PROLOGUE) - 4) << 5) | 0xA   # b.ge -> epilogue
+        return c + EPILOGUE
+
     # cave1 (layout "below"): expanded presentations use the sensor moved down by its height.
-    c1 = PROLOGUE + [bl(cave1 + 8, s.getter_a), dup_hi(16, 0), dup_hi(4, 1), fadd(16, 16, 4),
-                     ins_hi_v(0, 16)] + EPILOGUE
+    c1 = getter_cave(cave1, s.getter_a, [dup_hi(16, 0), dup_hi(4, 1), fadd(16, 16, 4), ins_hi_v(0, 16)])
 
     # cave2 / cave3: all other callers receive the notch rectangle.
     def notch_cave(base, getter):
-        c = PROLOGUE + [bl(base + 8, getter)]
-        c += load_double(8, (notch_w - sensor_w) / 2) + [fmov_d_x(5, 8), fsub(0, 0, 5)]
-        c += load_double(9, notch_w) + [ins_lo_x(1, 9)] + EPILOGUE
-        return c
+        return getter_cave(base, getter, load_double(8, (notch_w - sensor_w) / 2) + [fmov_d_x(5, 8), fsub(0, 0, 5)]
+                           + load_double(9, notch_w) + [ins_lo_x(1, 9)])
 
     # cave5: fixed width for remote Live Activities (x1 = 0, w2 = 0, x0 = width bit pattern).
     remote_w = round((real_notch_w + 2 * REMOTE_SIDE) / REMOTE_SCALE * 2) / 2
     c5 = [0xD2800001, 0x52800002] + load_double(0, remote_w) + [0xD65F03C0]
 
-    caves = {cave0: c0, cave1: c1, cave2: notch_cave(cave2, s.getter_a),
+    caves = {cave0: c0, cave6: c6, cave1: c1, cave2: notch_cave(cave2, s.getter_a),
              cave3: notch_cave(cave3, s.getter_b), cave4: notch_window_cave(real_notch_w, notch_h)}
     if not below:
         caves[cave5] = c5
     add_caves(caves)
 
-    patches.append((s.leaf, orig_word(s.leaf), enc(b(s.leaf, cave0))))
+    patches.append((s.leaf, orig_word(s.leaf), enc(b(s.leaf, cave6))))
     for a in s.sites_a:
         patches.append((a, orig_word(a), enc(bl(a, cave1 if below and a in s.expanded_sites else cave2))))
     for a in s.sites_b:
@@ -717,7 +765,7 @@ def build_patches(layout):
         patches.append((a, orig_word(a), enc(bl(a, cave4))))
     if not below:
         patches.append((s.remote_width_site, orig_word(s.remote_width_site), enc(b(s.remote_width_site, cave5))))
-    return patches, geometry, s
+    return patches, s
 
 
 MENUBAR_LLDB = r'''
@@ -1926,7 +1974,46 @@ def log_line(path, text):
         f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + text + "\n")
 
 
-def run_watcher(mba_pid):
+def builtin_display_state():
+    """(width, height) in points of the active built-in display, or None. Cheap enough to poll:
+    the notch size in points, and with it every patch constant, changes with the display
+    resolution, and the built-in display disappears when the lid is closed."""
+    import ctypes
+
+    class CGRect(ctypes.Structure):
+        _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double),
+                    ("w", ctypes.c_double), ("h", ctypes.c_double)]
+    cg = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+    cg.CGDisplayBounds.restype = CGRect
+    cg.CGDisplayBounds.argtypes = [ctypes.c_uint32]
+    cg.CGDisplayIsBuiltin.argtypes = [ctypes.c_uint32]
+    ids, count = (ctypes.c_uint32 * 16)(), ctypes.c_uint32(0)
+    if cg.CGGetActiveDisplayList(16, ids, ctypes.byref(count)):
+        return "unknown"
+    for i in range(count.value):
+        if cg.CGDisplayIsBuiltin(ids[i]):
+            r = cg.CGDisplayBounds(ids[i])
+            return (r.w, r.h)
+    return None
+
+
+def start_reapply(layout):
+    """Runs --reapply as its own launchd job: it restarts MenuBarAgent and replaces the watcher
+    that started it, so it must not belong to the watcher's job."""
+    run("launchctl", "bootout", f"{gui_domain()}/{REAPPLY_LABEL}")
+    workdir = tempfile.mkdtemp(prefix="dynamic_island_")
+    plist = os.path.join(workdir, REAPPLY_LABEL + ".plist")
+    with open(plist, "wb") as f:
+        plistlib.dump(launchd_job(REAPPLY_LABEL, [PYTHON, os.path.abspath(__file__), "--reapply",
+                                                  "--layout", layout], WATCHER_LOG), f)
+    ok = run("launchctl", "bootstrap", gui_domain(), plist).returncode == 0
+    shutil.rmtree(workdir, ignore_errors=True)
+    return ok
+
+
+def run_watcher(mba_pid, layout, patch_widths):
+    """Patches Live Activity clients that start later (layout "notch" only) and reapplies all
+    patches with the requested layout when the built-in display changes (resolution, lid)."""
     import select
 
     def note(text):
@@ -1938,15 +2025,17 @@ def run_watcher(mba_pid):
     for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(sig, on_signal)
 
-    geometry = notch_geometry()
-    if not geometry:
-        note("No built-in display with a notch was found; exiting.")
-        return
-    params = frame_params(geometry[0])
+    geometry = notch_geometry() if patch_widths else None
+    if patch_widths and not geometry:
+        note("No built-in display with a notch was found; client widths are left unchanged.")
+    params = frame_params(geometry[0]) if geometry else None
+    display = [builtin_display_state(), None]      # state the patches were built for, pending change
     done = set()
     banner_pid = [0]
 
     def handle(clients):
+        if not params:
+            return
         for pid, name in clients.items():
             if pid not in done:
                 done.add(pid)
@@ -1956,13 +2045,26 @@ def run_watcher(mba_pid):
                 note(f"{name} (pid {pid}): {'patched' if status == 'ok' else 'failed'}")
 
     def check_banner():         # reapply when ControlCenter restarts
+        if not params:
+            return
         pid = control_center_pid()
         if pid and pid != banner_pid[0]:
             banner_pid[0] = pid
             ok = patch_banner(geometry[0])
             note(f"Battery banners (ControlCenter, pid {pid}): {'patched' if ok else 'failed'}")
 
-    note(f"Started for MenuBarAgent pid {mba_pid}.")
+    def display_changed():
+        """True once a changed built-in display state has been seen on two checks in a row."""
+        state = builtin_display_state()
+        if state == "unknown" or state == display[0]:
+            display[1] = None
+            return False
+        if state != display[1]:
+            display[1] = state
+            return False
+        return True
+
+    note(f"Started for MenuBarAgent pid {mba_pid} (layout {layout}; built-in display {display[0]}).")
     stream = subprocess.Popen(
         ["/usr/bin/log", "stream", "--style", "compact", "--predicate", CLIENT_LOG_PREDICATE],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
@@ -1975,6 +2077,11 @@ def run_watcher(mba_pid):
                 os.kill(mba_pid, 0)
             except OSError:
                 note("MenuBarAgent has exited; exiting.")
+                return
+            if display_changed():
+                note(f"The built-in display changed to {display[1]}; reapplying the patches.")
+                if not start_reapply(layout):
+                    note("The patches could not be reapplied; run the script again.")
                 return
             check_banner()
             handle(extra_clients())
@@ -1994,7 +2101,7 @@ def launchd_job(label, arguments, log):
             "StandardOutPath": log, "StandardErrorPath": log}
 
 
-def start_watcher(mba_pid):
+def start_watcher(mba_pid, layout, patch_widths):
     """Runs the helper as a launchd job so that it does not end with the terminal session."""
     stop_watcher()
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -2002,7 +2109,8 @@ def start_watcher(mba_pid):
     plist = os.path.join(workdir, WATCHER_LABEL + ".plist")
     with open(plist, "wb") as f:
         plistlib.dump(launchd_job(WATCHER_LABEL, [PYTHON, os.path.abspath(__file__),
-                                                  "--watcher", str(mba_pid)], WATCHER_LOG), f)
+                                                  "--watcher", str(mba_pid), "--layout", layout]
+                                     + ([] if patch_widths else ["--no-client-widths"]), WATCHER_LOG), f)
     ok = run("launchctl", "bootstrap", gui_domain(), plist).returncode == 0
     shutil.rmtree(workdir, ignore_errors=True)
     return ok
@@ -2093,16 +2201,24 @@ def restart_siri_ai():
 
 
 def enable(layout, watch, restart_siri=False, report=print):
-    patches, geometry, sites = build_patches(layout)
+    requested = layout
+    geometry = notch_geometry()
+    fallback = layout != "classic" and not geometry
+    if fallback:
+        # Macs without a notch, a closed lid, or external displays only: the notch layouts have no
+        # notch to fit, so the island keeps its stock position below the menu bar. The login item
+        # keeps the requested layout and checks again at every login.
+        report(f"No active display with a notch was found; using layout \"classic\" instead of \"{layout}\".")
+        layout = "classic"
+    patches, sites = build_patches(layout, geometry)
     if not sites.verified:
         report(f"Note: this macOS build ({run('sw_vers', '-buildVersion').stdout.strip()}) has not been "
                "tested. The patch sites were located by their code signatures.")
     restore = set_defaults()
 
     # Clients are patched first: expanded views are rebuilt when MenuBarAgent recreates its scenes.
-    if geometry:
-        report("Patching Live Activity clients:" if layout == "notch" else "Restoring stock client widths:")
-        patch_clients(geometry[0], neutral=layout != "notch", report=report)
+    report("Patching Live Activity clients:" if layout == "notch" else "Restoring stock client widths:")
+    patch_clients(geometry[0] if geometry else 0.0, neutral=layout != "notch", report=report)
 
     report("Restarting and patching MenuBarAgent...")
     success, output = patch_menubar(patches)
@@ -2122,11 +2238,11 @@ def enable(layout, watch, restart_siri=False, report=print):
 
     stop_watcher()
     watcher_note = None
-    if layout == "notch" and watch:
+    if watch:
         pid = menubaragent_pid()
-        watcher_note = (f"Background helper started (log: {WATCHER_LOG})." if pid and start_watcher(pid)
-                        else "The background helper could not be started; clients that start later "
-                             "keep their stock widths.")
+        watcher_note = (f"Background helper started (log: {WATCHER_LOG})." if pid and start_watcher(pid, requested, layout == "notch")
+                        else "The background helper could not be started; clients that start later keep "
+                             "their stock widths, and display changes need a new run of this script.")
 
     description = {"notch": "expanded presentations wrap around the notch",
                    "below": "expanded presentations are placed below the notch",
@@ -2144,6 +2260,7 @@ def enable(layout, watch, restart_siri=False, report=print):
 
 def disable(report=print):
     stop_watcher()
+    run("launchctl", "bootout", f"{gui_domain()}/{REAPPLY_LABEL}")
     if remove_autostart():
         report("Automatic activation at login has been removed.")
 
@@ -2192,7 +2309,8 @@ def parse_args():
                          help="do not apply the patches at login")
     parser.add_argument("--layout", choices=LAYOUTS, default="notch",
                         help="notch: wrap around the notch (default); below: expanded presentations "
-                             "below the notch; classic: activation only")
+                             "below the notch; classic: activation only, used automatically when no display "
+                             "with a notch is active")
     siri = parser.add_mutually_exclusive_group()
     siri.add_argument("--restart-siri", dest="restart_siri", action="store_true", default=None,
                       help="restart Siri AI after patching so that Siri AI and Spotlight appear in the "
@@ -2200,8 +2318,11 @@ def parse_args():
     siri.add_argument("--no-restart-siri", dest="restart_siri", action="store_false",
                       help="leave Siri AI running as it is")
     parser.add_argument("--no-watch", action="store_true",
-                        help="do not start the background helper for clients that start later")
+                        help="do not start the background helper (patches clients that start later and "
+                             "reapplies the patches when the built-in display changes)")
     parser.add_argument("--watcher", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--no-client-widths", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--reapply", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--login", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--banner-sites", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args()
@@ -2226,11 +2347,26 @@ def login_run(args):
         raise
 
 
+def reapply_run(args):
+    """Started by the watcher after the built-in display changed."""
+    def report(text):
+        log_line(WATCHER_LOG, "[reapply] " + text)
+    time.sleep(3)       # let the display configuration settle
+    try:
+        enable(args.layout, True, False, report=report)
+    except SystemExit as exc:
+        report(str(exc))
+        raise
+
+
 def main():
     args = parse_args()
 
     if args.watcher:
-        run_watcher(args.watcher)
+        run_watcher(args.watcher, args.layout, not args.no_client_widths)
+        return
+    if args.reapply:
+        reapply_run(args)
         return
     if args.banner_sites:
         locate_banner_sites()

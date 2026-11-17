@@ -37,7 +37,7 @@ macOS 27.3 及更高版本的 MenuBarAgent 內建了動態島實作，但僅在 
 - **啟用。** MenuBarAgent 透過 `IsAppleInternalBuild()` 檢查來保護 `EmulateCenterHUD` 和 `ShowSoftwareNotch` 兩個偏好設定。指令碼設定這兩個偏好，並將對應的檢查指令替換為 `nop`。
 - **瀏海幾何。** 系統原生動態島以選單列下方一塊 59 × 34 pt 的虛擬區域為基準繪製。指令碼將傳回該矩形的函式重新導向至程式碼洞，讓其在執行時從 `NSScreen` 讀取真實的瀏海矩形。
 - **面板寬度。** 每個展開面板的寬度固定在各自的用戶端程序中。指令碼鉤住這些程序中的 SwiftUI frame 初始化函式，將展開範圍內的寬度替換為適配瀏海的值。對於寬度特殊的用戶端（AirDrop、ControlCenter 中的電池橫幅），使用專用修補程式處理。
-- **背景守護程式。** 計時器等 Live Activity 用戶端按需啟動。守護任務 `local.dynamic-island.watcher` 監控 MenuBarAgent 日誌，在新用戶端接入時自動打修補程式，並在 MenuBarAgent 退出時一同退出。日誌：`~/Library/Logs/dynamic_island_watcher.log`。
+- **背景守護程式。** 計時器等 Live Activity 用戶端按需啟動。守護任務 `local.dynamic-island.watcher` 監控 MenuBarAgent 日誌，在新用戶端接入時自動打修補程式，並在 MenuBarAgent 退出時一同退出。日誌：`~/Library/Logs/dynamic_island_watcher.log`。 它也會監看內建螢幕：解析度變更或開闔蓋時，依新的瀏海尺寸重新套用全部補丁（看不到瀏海時使用 `classic`）。MenuBarAgent 會重新啟動一次，島約 20 秒後恢復。
 - **登入自動啟動。** 指令碼可將自身複製到 `~/Library/Application Support/DynamicEnabler/`，並安裝 LaunchAgent `local.dynamic-island.autostart`，在每次登入時自動重新套用修補程式。日誌：`~/Library/Logs/dynamic_island_autostart.log`。
 
 所有修補程式均在記憶體中進行，不修改系統卷宗上的任何檔案。除非啟用了登入自動啟動，重新啟動 MenuBarAgent 或 Mac 後修補程式即失效。
@@ -47,7 +47,7 @@ macOS 27.3 及更高版本的 MenuBarAgent 內建了動態島實作，但僅在 
 | 需求 | 說明 |
 | --- | --- |
 | macOS | 27.3 beta，已在 build 26C5035r（beta 1）和 26C5047e（beta 2）上測試；不支援 27.2 及更早版本。修補位置按程式碼特徵在本機二進位檔中尋找，後續版本可能無需更新即可使用；任何特徵不是恰好命中一次時，指令碼會停止且不做任何更動。 |
-| 硬體 | 帶有瀏海的 MacBook；內建顯示器必須處於啟用狀態。 |
+| 硬體 | 任何 Mac。有啟用中的瀏海顯示器（帶瀏海的 MacBook 開蓋）時，島貼合瀏海；沒有時（無瀏海的 Mac、闔蓋、僅外接顯示器）自動切換為 `--layout classic`。無瀏海環境尚未實測。 |
 | SIP | 必須解除系統完整性保護（SIP）的除錯限制：在復原模式中執行 `csrutil enable --without debug`（建議，SIP 其餘保護保持開啟）。完全關閉 SIP（`csrutil disable`）也可以。 |
 | 工具 | 最新的 Xcode beta，並用 `sudo xcode-select -s /Applications/Xcode-beta.app/Contents/Developer` 切換過去。與 macOS 27 對應的命令列工具也可以；舊版工具（某些系統上 `xcode-select --install` 安裝的就是舊版）在 lldb 附加程序時會當機。 |
 | 除錯權限 | 需要免密碼除錯：執行 `sudo DevToolsSecurity -enable`，並且目前使用者在 `_developer` 群組中。否則 lldb 會一直等待「開發者工具存取」授權視窗。 |
@@ -80,7 +80,7 @@ python3 enable_dynamic_island.py --disable                 # 停用並移除登�
 | --- | --- |
 | `--layout notch` | 預設。展開態環繞瀏海顯示。 |
 | `--layout below` | 展開態顯示在瀏海下方，保持系統原始寬度。 |
-| `--layout classic` | 僅啟用，不調整位置，島停留在選單列下方的預設位置。 |
+| `--layout classic` | 僅啟用，不調整位置，島停留在選單列下方的預設位置。沒有啟用中的瀏海顯示器時自動使用此佈局。 |
 | `--no-watch` | 不啟動背景守護程式。 |
 | `--restart-siri` | 補丁完成後重新啟動 Siri AI，讓 Siri AI 和 Spotlight 上島（搭配 `--autostart` 時登入時也會執行）。Siri AI 未開啟或無法使用時沒有影響。 |
 | `--no-restart-siri` | 不動 Siri AI。兩個選項都不傳時，沿用登入項目目前的設定。 |
@@ -95,7 +95,7 @@ python3 enable_dynamic_island.py --disable
 
 ## 已知限制
 
-- 僅在帶有瀏海的 MacBook 上測試；外接顯示器的幾何計算基於內建顯示器。
+- 島只出現在主顯示器上（副螢幕和原生系統一樣，把即時動態放在選單列）。在內建瀏海螢幕上貼合瀏海；外接螢幕或並行 iPad 當主顯示器時，島在那塊螢幕上使用 `classic` 位置。切換主顯示器即時生效。內建螢幕變更解析度、開闔蓋由背景守護程式自動重新套用補丁（`--no-watch` 時不處理）。在其他螢幕上，展開面板仍維持瀏海加寬後的寬度。
 - WidgetKit 轉譯的第三方 Live Activity 保持其應用程式自身設定的寬度。
 - 低電量橫幅的加寬效果未經螢幕實際驗證。
 
