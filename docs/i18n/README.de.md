@@ -39,6 +39,7 @@ macOS 27 (27.3 und höher) enthält eine Dynamic Island-Implementierung in MenuB
 - **Panel-Breiten.** Die Breite jedes erweiterten Panels ist im Client-Prozess, der es rendert, fest vorgegeben. Das Skript fängt SwiftUI-Frame-Initialisierer in diesen Prozessen ab und ersetzt Breiten im erweiterten Bereich. Clients mit ungewöhnlicher Größenanpassung (AirDrop, Batteriebanner in ControlCenter) erhalten dedizierte Patches.
 - **Hintergrund-Helfer.** Live-Activity-Clients wie der Timer-Prozess starten bei Bedarf. Ein Helfer-Job (`local.dynamic-island.watcher`) überwacht das MenuBarAgent-Protokoll und patcht neue Clients, sobald sie erscheinen. Er wird beendet, wenn MenuBarAgent beendet wird. Protokoll: `~/Library/Logs/dynamic_island_watcher.log`. Außerdem überwacht er das integrierte Display: Ändert sich die Auflösung oder wird der Deckel geöffnet oder geschlossen, wendet er alle Patches mit der neuen Notch-Größe erneut an (oder `classic`, wenn keine Notch sichtbar ist). MenuBarAgent startet dabei einmal neu; die Insel erscheint nach etwa 20 Sekunden wieder.
 - **Anmeldeaktivierung.** Das Skript kann sich selbst nach `~/Library/Application Support/DynamicEnabler/` kopieren und einen LaunchAgent (`local.dynamic-island.autostart`) installieren, der die Patches bei jeder Anmeldung erneut anwendet. Protokoll: `~/Library/Logs/dynamic_island_autostart.log`.
+- **Mehrere Displays.** Standardmäßig erscheint die Insel nur auf dem Hauptdisplay. `--displays all` zeigt sie auf allen aktiven Displays, `--displays secondary` auf allen außer dem Hauptdisplay. MenuBarAgent wählt die Darstellung jedes Displays in einer kleinen Funktion, die auch den Abstand der Menüleistenobjekte bestimmt. Das Skript lässt sie daher unverändert, legt hinter den Code-Caves eine Kopie ohne die Hauptdisplay-Prüfung ab und leitet nur die Aufrufe der Insel auf diese Kopie um. Systembanner werden an jede Insel geliefert. Beitrag von [Eric Dou](https://github.com/Eric-Dou).
 
 Alle Patches erfolgen nur im Speicher. Auf dem System-Volume wird nichts geändert. Ein Neustart von MenuBarAgent oder des Mac entfernt die Patches, es sei denn, die Anmeldeaktivierung ist aktiviert.
 
@@ -64,7 +65,8 @@ Das Skript prüft zunächst, ob die Debugging-Einschränkung des SIP aufgehoben 
 
 1. Dynamic Island aktivieren oder deaktivieren.
 2. Bei Aktivierung: ob Siri AI neu gestartet werden soll, damit Siri AI und Spotlight in der Insel erscheinen. Ist Siri AI ausgeschaltet oder nicht verfügbar, ist die Wahl egal.
-3. Bei Aktivierung: ob es bei jeder Anmeldung automatisch angewendet werden soll.
+3. Bei Aktivierung: wo die Insel erscheinen soll (nur Hauptdisplay, alle Displays oder alle außer dem Hauptdisplay).
+4. Bei Aktivierung: ob es bei jeder Anmeldung automatisch angewendet werden soll.
 
 ### Nicht-interaktiver Modus
 
@@ -84,6 +86,7 @@ Zusätzliche Optionen:
 | `--no-watch` | Hintergrund-Helfer nicht starten. |
 | `--restart-siri` | Startet Siri AI nach dem Patchen neu, damit Siri AI und Spotlight in der Insel erscheinen (mit `--autostart` auch bei der Anmeldung). Keine Wirkung, wenn Siri AI ausgeschaltet oder nicht verfügbar ist. |
 | `--no-restart-siri` | Siri AI unverändert lassen. Ohne eine der beiden Optionen bleibt die aktuelle Einstellung des Anmeldeobjekts erhalten. |
+| `--displays main` / `all` / `secondary` | Zeigt die Insel nur auf dem Hauptdisplay (Standard), auf allen aktiven Displays oder auf allen außer dem Hauptdisplay. Auf Build 26C5035r (Beta 1) erscheinen Systembanner weiterhin nur auf ihrem bevorzugten Display. Ohne die Option bleibt die aktuelle Einstellung des Anmeldeobjekts erhalten. |
 
 ### Deaktivierung
 
@@ -95,7 +98,7 @@ Stoppt den Hintergrund-Helfer, entfernt die Anmeldeaktivierung, stellt Client-Pr
 
 ## Bekannte Einschränkungen
 
-- Die Insel erscheint nur auf dem Hauptdisplay (Nebendisplays zeigen Live-Aktivitäten wie gewohnt in der Menüleiste). Auf dem integrierten Notch-Display passt sie sich der Notch an; ist ein anderes Display (extern, Sidecar-iPad) Hauptdisplay, nutzt sie dort die `classic`-Position. Ein Wechsel des Hauptdisplays wirkt sofort. Auflösungsänderungen des integrierten Displays und Öffnen/Schließen des Deckels übernimmt der Hintergrund-Helfer, der die Patches erneut anwendet (nicht mit `--no-watch`). Erweiterte Ansichten behalten auf anderen Displays die verbreiterten Notch-Breiten.
+- Standardmäßig erscheint die Insel nur auf dem Hauptdisplay (Nebendisplays zeigen Live-Aktivitäten wie gewohnt in der Menüleiste); siehe `--displays`. Die Mehrdisplay-Modi wurden mit einem Sidecar-iPad als zweitem Display getestet, noch nicht mit einem MacBook mit Notch oder mehr als zwei Displays. Auf dem integrierten Notch-Display passt sie sich der Notch an; ist ein anderes Display (extern, Sidecar-iPad) Hauptdisplay, nutzt sie dort die `classic`-Position. Ein Wechsel des Hauptdisplays wirkt sofort. Auflösungsänderungen des integrierten Displays und Öffnen/Schließen des Deckels übernimmt der Hintergrund-Helfer, der die Patches erneut anwendet (nicht mit `--no-watch`). Erweiterte Ansichten behalten auf anderen Displays die verbreiterten Notch-Breiten.
 - Von WidgetKit gerenderte Drittanbieter-Live-Activities behalten die von ihren Apps gewählten Breiten bei.
 - Die Breite des Batterie-Low-Banners wurde nicht auf dem Bildschirm überprüft.
 

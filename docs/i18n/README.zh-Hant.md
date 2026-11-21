@@ -39,6 +39,7 @@ macOS 27.3 及更高版本的 MenuBarAgent 內建了動態島實作，但僅在 
 - **面板寬度。** 每個展開面板的寬度固定在各自的用戶端程序中。指令碼鉤住這些程序中的 SwiftUI frame 初始化函式，將展開範圍內的寬度替換為適配瀏海的值。對於寬度特殊的用戶端（AirDrop、ControlCenter 中的電池橫幅），使用專用修補程式處理。
 - **背景守護程式。** 計時器等 Live Activity 用戶端按需啟動。守護任務 `local.dynamic-island.watcher` 監控 MenuBarAgent 日誌，在新用戶端接入時自動打修補程式，並在 MenuBarAgent 退出時一同退出。日誌：`~/Library/Logs/dynamic_island_watcher.log`。 它也會監看內建螢幕：解析度變更或開闔蓋時，依新的瀏海尺寸重新套用全部補丁（看不到瀏海時使用 `classic`）。MenuBarAgent 會重新啟動一次，島約 20 秒後恢復。
 - **登入自動啟動。** 指令碼可將自身複製到 `~/Library/Application Support/DynamicEnabler/`，並安裝 LaunchAgent `local.dynamic-island.autostart`，在每次登入時自動重新套用修補程式。日誌：`~/Library/Logs/dynamic_island_autostart.log`。
+- **多顯示器。** 預設只在主顯示器上顯示動態島。`--displays all` 讓所有作用中的顯示器都顯示，`--displays secondary` 讓主顯示器以外的顯示器顯示。MenuBarAgent 以一個小函式決定每塊螢幕的顯示方式，選單列圖示間距也會用到它，因此指令碼不修改原函式，而是在程式碼洞後面放一份去掉主螢幕判斷的副本，只把動態島相關的呼叫改到副本上。系統橫幅會送到每個島。由 [Eric Dou](https://github.com/Eric-Dou) 貢獻。
 
 所有修補程式均在記憶體中進行，不修改系統卷宗上的任何檔案。除非啟用了登入自動啟動，重新啟動 MenuBarAgent 或 Mac 後修補程式即失效。
 
@@ -64,7 +65,8 @@ python3 enable_dynamic_island.py
 
 1. 啟用還是停用動態島。
 2. 啟用時：是否重新啟動 Siri AI，讓 Siri AI 和 Spotlight 上島。如果 Siri AI 未開啟或無法使用，選哪個都可以。
-3. 啟用時：是否在每次登入時自動套用。
+3. 啟用時：動態島顯示在哪裡（僅主顯示器、所有顯示器，或主顯示器以外的所有顯示器）。
+4. 啟用時：是否在每次登入時自動套用。
 
 ### 非互動模式
 
@@ -84,6 +86,7 @@ python3 enable_dynamic_island.py --disable                 # 停用並移除登�
 | `--no-watch` | 不啟動背景守護程式。 |
 | `--restart-siri` | 補丁完成後重新啟動 Siri AI，讓 Siri AI 和 Spotlight 上島（搭配 `--autostart` 時登入時也會執行）。Siri AI 未開啟或無法使用時沒有影響。 |
 | `--no-restart-siri` | 不動 Siri AI。兩個選項都不傳時，沿用登入項目目前的設定。 |
+| `--displays main` / `all` / `secondary` | 動態島僅在主顯示器（預設）、所有作用中的顯示器，或主顯示器以外的顯示器上顯示。在 build 26C5035r（beta 1）上，系統橫幅仍只出現在其偏好的顯示器上。未指定時沿用登入項目目前的設定。 |
 
 ### 停用
 
@@ -95,7 +98,7 @@ python3 enable_dynamic_island.py --disable
 
 ## 已知限制
 
-- 島只出現在主顯示器上（副螢幕和原生系統一樣，把即時動態放在選單列）。在內建瀏海螢幕上貼合瀏海；外接螢幕或並行 iPad 當主顯示器時，島在那塊螢幕上使用 `classic` 位置。切換主顯示器即時生效。內建螢幕變更解析度、開闔蓋由背景守護程式自動重新套用補丁（`--no-watch` 時不處理）。在其他螢幕上，展開面板仍維持瀏海加寬後的寬度。
+- 預設只在主顯示器上顯示動態島（副螢幕和原生系統一樣，把即時動態放在選單列），見 `--displays`。多顯示器模式只在並行 iPad 作為副螢幕時測試過，尚未在有瀏海的 MacBook 或三塊以上顯示器上測試。在內建瀏海螢幕上貼合瀏海；外接螢幕或並行 iPad 當主顯示器時，島在那塊螢幕上使用 `classic` 位置。切換主顯示器即時生效。內建螢幕變更解析度、開闔蓋由背景守護程式自動重新套用補丁（`--no-watch` 時不處理）。在其他螢幕上，展開面板仍維持瀏海加寬後的寬度。
 - WidgetKit 轉譯的第三方 Live Activity 保持其應用程式自身設定的寬度。
 - 低電量橫幅的加寬效果未經螢幕實際驗證。
 

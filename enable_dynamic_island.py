@@ -66,8 +66,9 @@ Requirements
     with its original bytes before writing.
   - Any Mac. The layouts "notch" and "below" need an active display with a notch (a notched
     MacBook with the lid open); without one the script uses layout "classic" instead. The island
-    is shown on the main display; on any display other than the built-in one it keeps the stock
-    ("classic") position. The background helper reapplies the patches when the built-in
+    is shown on the main display; --displays all shows it on every active display and --displays
+    secondary on every display except the main one (see "Multi-display patch").
+    On any display other than the built-in one it keeps the stock ("classic") position. The background helper reapplies the patches when the built-in
     display's resolution changes or the lid is opened or closed.
   - SIP's debugging restriction lifted ("csrutil enable --without debug" in Recovery), or SIP
     fully disabled. lldb cannot attach to system processes otherwise.
@@ -90,7 +91,7 @@ Notes
 Usage
   python3 enable_dynamic_island.py                      interactive setup
   python3 enable_dynamic_island.py --enable [--autostart | --no-autostart] [--layout notch|below|classic]
-                                   [--restart-siri | --no-restart-siri]
+                                   [--restart-siri | --no-restart-siri] [--displays main|all|secondary]
   python3 enable_dynamic_island.py --disable
 """
 
@@ -654,7 +655,154 @@ def menubar_sites(image):
     return s
 
 
-def build_patches(layout, geometry):
+# ---------------------------------------------------------------------------------------------
+# Multi-display patch (contributed by Eric Dou)
+# ---------------------------------------------------------------------------------------------
+# MenuBarAgent picks a presentation style per display in one small function, the "style
+# selector", which sits directly in front of the sensor rectangle leaf. It returns 2 (ordinary
+# menu bar) when DisableCenterHUD is set, handles one display kind on its own, and otherwise
+# returns 1 (island) only if EmulateCenterHUD is set and Display.Storage.isMain is true. The
+# last check keeps the island on the main display.
+#
+# The selector is shared with menu-item spacing (8 vs 14 pt), so it is not patched in place:
+# doing so removed Apple's own menu bar items. Instead a copy without the isMain check is
+# placed after the code caves, and every caller except the spacing one is redirected to it.
+# For "secondary" a small wrapper calls the copy and returns 2 whenever isMain is true.
+# A system banner reaches only the HUD of its preferred display; that filter is skipped so
+# that each HUD receives it.
+#
+# Display modes: "main" (stock), "all" (every active display), "secondary" (every display but
+# the main one). Located by signature like the other sites; verified on 26C5035r and 26C5047e.
+# 26C5035r checks banners differently, so there they stay on their preferred display.
+
+DISPLAY_MODES = ("main", "all", "secondary")
+MULTIDISPLAY_VERIFIED = {
+    "DE472913-A81D-35BE-9584-EC597987E015": dict(
+        selector=0x1001F7A04, gate=0x1001F7A8C, spacing_call=0x1000305EC,
+        calls=(0x100017650, 0x10001895C, 0x1000194D8, 0x1001F76F4, 0x100313334, 0x1004D416C),
+        banner=None, banner_append=None),
+    "5DA23C12-9FC3-3E00-88CC-F873E76F7CBC": dict(
+        selector=0x100202C90, gate=0x100202D10, spacing_call=0x100032084,
+        calls=(0x100017780, 0x100018AEC, 0x1000194F0, 0x100019C04, 0x100202934, 0x10031807C, 0x1004DE4B4),
+        banner=0x100018C48, banner_append=0x100018C7C),
+}
+
+
+def locate_multidisplay(image, s):
+    m = MachO(image)
+    d = types.SimpleNamespace()
+    # Selector tail, right in front of the leaf: `mov x0, #0 ; bl <metadata> ; ldrsw x8, [x0, #isMain] ;
+    # add x8, x19, x8 ; ldrb w8, [x8] ; tbz w8, #0, <style 2> ; mov w0, #1 ; b <epilogue>`
+    d.gate = s.leaf - 12
+    if not m.match(d.gate - 20, [(0xD2800000, 0xFFFFFFFF), (0x94000000, 0xFC000000), (0xB9800008, 0xFFC003FF),
+                                 (0x8B080268, 0xFFFFFFFF), (0x39400108, 0xFFFFFFFF), (0x36000008, 0xFFF8001F),
+                                 (0x52800020, 0xFFFFFFFF), (0x14000000, 0xFC000000)]):
+        raise SignatureError("style selector: unexpected isMain check")
+    d.selector = m.function_start(d.gate)
+    off = ((m.w(d.gate) >> 5) & 0x3FFF) << 2
+    style2 = d.gate + off - ((off & 0x8000) << 1)
+    if m.w(style2) != 0x52800040 or not d.selector < style2 < d.gate:        # mov w0, #2
+        raise SignatureError("style selector: unexpected fallback")
+    # x19 = display storage, set up after `mov w0, #2 ; b` and before `ldrb w20, [x19, #..]`.
+    d.storage_setup = []
+    a = style2 + 8
+    while m.w(a) & 0xFFC003FF != 0x39400274:
+        d.storage_setup.append(a)
+        a += 4
+        if len(d.storage_setup) > 4:
+            raise SignatureError("style selector: display storage not found")
+    d.words = [m.w(x) for x in range(d.selector, s.leaf, 4)]
+    for i, w in enumerate(d.words):            # every other pc-relative branch must stay inside
+        pc = d.selector + 4 * i
+        if w >> 26 in (0x05, 0x25) or w & 0x9F000000 == 0x90000000:
+            continue
+        if w & 0x7E000000 == 0x36000000:        # tbz / tbnz
+            off = ((w >> 5) & 0x3FFF) << 2; off -= (off & 0x8000) << 1
+        elif w & 0xFF000010 == 0x54000000 or w & 0x7E000000 == 0x34000000:      # b.cond, cbz / cbnz
+            off = ((w >> 5) & 0x7FFFF) << 2; off -= (off & 0x100000) << 1
+        elif w & 0x1F000000 == 0x10000000 or w & 0x3B000000 == 0x18000000:      # adr, ldr literal
+            raise SignatureError("style selector: unexpected pc-relative instruction")
+        else:
+            continue
+        if not d.selector <= pc + off < s.leaf:
+            raise SignatureError("style selector: branch leaves the function")
+    for i, w in enumerate(d.words):
+        if w >> 26 == 0x05 and not d.selector <= m.branch_target(d.selector + 4 * i) < s.leaf:
+            raise SignatureError("style selector: branch leaves the function")
+
+    callers = [c for c in range(m.t0, m.t1, 4) if m.w(c) >> 26 == 0x25 and m.branch_target(c) == d.selector]
+    # Menu-item spacing: `and w8, w0, #0xff ; cmp w8, #2 ; fmov d0, #imm`
+    d.spacing_call = one("menu item spacing call", [c for c in callers if m.w(c + 8) == 0x7100091F
+                                                    and m.w(c + 12) & 0xFFE01FE0 == 0x1E601000])
+    d.calls = tuple(c for c in callers if c != d.spacing_call)
+    if len(d.calls) < 4:
+        raise SignatureError(f"style selector: {len(d.calls)} island callers")
+
+    # Banner display filter: `ldrb w10, [x9, #4] ; cmp w10, #1 ; b.ne L ; tst x8, #8 ; cset w8, eq ;
+    # and ; orr ; tbnz w8, #0, <append> ; b <skip> ; L: ldr ; ldr ; cmp ; b.ne <skip> ; <append>`
+    pattern = [(0x39400000, 0xFFC00000), (0x7100055F, 0xFFFFFFFF), (0x54000001, 0xFF00001F),
+               (0xF27D011F, 0xFFFFFFFF), (0x1A9F17E8, 0xFFFFFFFF), (0x0A000000, 0xFF200000),
+               (0x2A000000, 0xFF200000), (0x37000008, 0xFFF8001F), (0x14000000, 0xFC000000),
+               (0xB9400000, 0xFFC00000), (0xB9400000, 0xFFC00000), (0x6B00001F, 0xFF20001F),
+               (0x54000001, 0xFF00001F)]
+    # Optional: without it the island still appears on every display, and banners only on their
+    # preferred one.
+    hits = [m.t0 + 4 * i for i in range(len(m.words) - len(pattern)) if m.match(m.t0 + 4 * i, pattern)]
+    d.banner = hits[0] if len(hits) == 1 and (m.w(hits[0] + 28) >> 5) & 0x3FFF == 6 else None
+    d.banner_append = d.banner + 4 * len(pattern) if d.banner else None     # tbnz targets the append call
+
+    known = MULTIDISPLAY_VERIFIED.get(s.uuid)
+    if known:
+        found = dict(selector=d.selector, gate=d.gate, spacing_call=d.spacing_call, calls=d.calls,
+                     banner=d.banner, banner_append=d.banner_append)
+        wrong = sorted(k for k in known if known[k] != found[k])
+        if wrong:
+            raise SignatureError(f"located sites differ from the verified ones ({', '.join(wrong)})")
+    d.verified = bool(known)
+    return d
+
+
+def multidisplay_patches(image, s, mode):
+    """Patches for the display modes "all" and "secondary" (see "Multi-display patch")."""
+    m = MachO(image)
+    d = locate_multidisplay(image, s)
+
+    def moved(src, dst):
+        """The instruction at src, re-encoded for address dst."""
+        w = m.w(src)
+        if w >> 26 == 0x25:
+            return bl(dst, m.branch_target(src))
+        if w & 0x9F000000 == 0x90000000:
+            return adrp(dst, adrp_page(src, w), w & 31)
+        return w
+
+    copy = s.caves[0] + sum(CAVE_SLOTS) * 4
+    words = [moved(d.selector + 4 * i, copy + 4 * i) for i in range(len(d.words))]
+    words[(d.gate - d.selector) // 4] = NOP
+    target, end = copy, copy + 4 * len(words)
+    if mode == "secondary":
+        target = (end + 15) & ~15
+        # Saves x19-x22, calls the copy, then reads isMain the way the selector does.
+        w = [PACIBSP, 0xA9BC4FF4, 0xA90157F6, 0xA9027BFD, 0x910083FD]     # stp x20, x19, [sp, #-0x40]! ; ...
+        w += [bl(target + 4 * len(w), copy), 0x2A0003F5]                   # bl copy ; mov w21, w0
+        for a in d.storage_setup + [d.gate - 20 + 4 * i for i in range(5)]:
+            w.append(moved(a, target + 4 * len(w)))
+        w += [0x7200011F, 0x52800049, 0x1A8902A0]                          # tst w8, #1 ; mov w9, #2 ; csel w0, w21, w9, eq
+        w += [0xA9427BFD, 0xA94157F6, 0xA8C44FF4, 0xD65F0FFF]              # restore ; retab
+        words += [0] * ((target - end) // 4) + w
+        end = target + 4 * len(w)
+    vmaddr, vmsize = m.segments["__TEXT"]
+    if end > vmaddr + vmsize or any(m.raw(copy, end - copy)):
+        raise SignatureError("no room for the style selector copy")
+
+    patches = [(copy + 4 * i, b"\0\0\0\0", enc(w)) for i, w in enumerate(words) if w]
+    patches += [(c, m.raw(c, 4), enc(bl(c, target))) for c in d.calls]
+    if d.banner:
+        patches.append((d.banner, m.raw(d.banner, 4), enc(b(d.banner, d.banner_append))))
+    return patches, d
+
+
+def build_patches(layout, geometry, displays="main"):
     """Returns ([(address, original bytes, new bytes)], sites). geometry is the result of
     notch_geometry() or None; layouts other than "classic" require it."""
     with open(MENUBARAGENT, "rb") as f:
@@ -667,6 +815,14 @@ def build_patches(layout, geometry):
         return image[o: o + 4]
 
     patches = [(a, bytes.fromhex(h), enc(NOP)) for a, h in s.gates]
+    s.multidisplay = None
+    if displays != "main":
+        try:
+            extra, s.multidisplay = multidisplay_patches(image, s, displays)
+        except (SignatureError, KeyError, IndexError, struct.error) as exc:
+            fail(f"Showing the Dynamic Island on more than the main display is not available on this "
+                 f"build of MenuBarAgent ({exc}). Use --displays main. No changes were made.")
+        patches += extra
 
     def add_caves(caves):
         for base, words in caves.items():
@@ -1997,7 +2153,7 @@ def builtin_display_state():
     return None
 
 
-def start_reapply(layout):
+def start_reapply(layout, displays):
     """Runs --reapply as its own launchd job: it restarts MenuBarAgent and replaces the watcher
     that started it, so it must not belong to the watcher's job."""
     run("launchctl", "bootout", f"{gui_domain()}/{REAPPLY_LABEL}")
@@ -2005,13 +2161,13 @@ def start_reapply(layout):
     plist = os.path.join(workdir, REAPPLY_LABEL + ".plist")
     with open(plist, "wb") as f:
         plistlib.dump(launchd_job(REAPPLY_LABEL, [PYTHON, os.path.abspath(__file__), "--reapply",
-                                                  "--layout", layout], WATCHER_LOG), f)
+                                                  "--layout", layout, "--displays", displays], WATCHER_LOG), f)
     ok = run("launchctl", "bootstrap", gui_domain(), plist).returncode == 0
     shutil.rmtree(workdir, ignore_errors=True)
     return ok
 
 
-def run_watcher(mba_pid, layout, patch_widths):
+def run_watcher(mba_pid, layout, patch_widths, displays):
     """Patches Live Activity clients that start later (layout "notch" only) and reapplies all
     patches with the requested layout when the built-in display changes (resolution, lid)."""
     import select
@@ -2064,7 +2220,7 @@ def run_watcher(mba_pid, layout, patch_widths):
             return False
         return True
 
-    note(f"Started for MenuBarAgent pid {mba_pid} (layout {layout}; built-in display {display[0]}).")
+    note(f"Started for MenuBarAgent pid {mba_pid} (layout {layout}; displays {displays}; built-in display {display[0]}).")
     stream = subprocess.Popen(
         ["/usr/bin/log", "stream", "--style", "compact", "--predicate", CLIENT_LOG_PREDICATE],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
@@ -2080,7 +2236,7 @@ def run_watcher(mba_pid, layout, patch_widths):
                 return
             if display_changed():
                 note(f"The built-in display changed to {display[1]}; reapplying the patches.")
-                if not start_reapply(layout):
+                if not start_reapply(layout, displays):
                     note("The patches could not be reapplied; run the script again.")
                 return
             check_banner()
@@ -2101,7 +2257,7 @@ def launchd_job(label, arguments, log):
             "StandardOutPath": log, "StandardErrorPath": log}
 
 
-def start_watcher(mba_pid, layout, patch_widths):
+def start_watcher(mba_pid, layout, patch_widths, displays):
     """Runs the helper as a launchd job so that it does not end with the terminal session."""
     stop_watcher()
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -2109,7 +2265,8 @@ def start_watcher(mba_pid, layout, patch_widths):
     plist = os.path.join(workdir, WATCHER_LABEL + ".plist")
     with open(plist, "wb") as f:
         plistlib.dump(launchd_job(WATCHER_LABEL, [PYTHON, os.path.abspath(__file__),
-                                                  "--watcher", str(mba_pid), "--layout", layout]
+                                                  "--watcher", str(mba_pid), "--layout", layout,
+                                                  "--displays", displays]
                                      + ([] if patch_widths else ["--no-client-widths"]), WATCHER_LOG), f)
     ok = run("launchctl", "bootstrap", gui_domain(), plist).returncode == 0
     shutil.rmtree(workdir, ignore_errors=True)
@@ -2131,13 +2288,13 @@ def stop_watcher():
 # Automatic activation at login
 # ---------------------------------------------------------------------------------------------
 
-def install_autostart(layout, watch, restart_siri):
+def install_autostart(layout, watch, restart_siri, displays):
     """Copies the script to Application Support and registers a login LaunchAgent."""
     os.makedirs(SUPPORT_DIR, exist_ok=True)
     installed = os.path.join(SUPPORT_DIR, SCRIPT_NAME)
     if os.path.abspath(__file__) != installed:
         shutil.copy2(os.path.abspath(__file__), installed)
-    arguments = [PYTHON, installed, "--login", "--layout", layout] + ([] if watch else ["--no-watch"]) \
+    arguments = [PYTHON, installed, "--login", "--layout", layout, "--displays", displays] + ([] if watch else ["--no-watch"]) \
         + (["--restart-siri"] if restart_siri else [])
     os.makedirs(os.path.dirname(AUTOSTART_PLIST), exist_ok=True)
     with open(AUTOSTART_PLIST, "wb") as f:
@@ -2151,6 +2308,17 @@ def autostart_restarts_siri():
             return "--restart-siri" in plistlib.load(f).get("ProgramArguments", [])
     except (OSError, plistlib.InvalidFileException):
         return False
+
+
+def autostart_displays():
+    """The display mode of the installed login item ("main" if there is none)."""
+    try:
+        with open(AUTOSTART_PLIST, "rb") as f:
+            arguments = plistlib.load(f).get("ProgramArguments", [])
+    except (OSError, plistlib.InvalidFileException):
+        return "main"
+    i = arguments.index("--displays") + 1 if "--displays" in arguments else 0
+    return arguments[i] if 0 < i < len(arguments) and arguments[i] in DISPLAY_MODES else "main"
 
 
 def remove_autostart():
@@ -2200,7 +2368,7 @@ def restart_siri_ai():
     return "Siri AI was restarted so that it reconnects to the island (Siri AI and Spotlight)."
 
 
-def enable(layout, watch, restart_siri=False, report=print):
+def enable(layout, watch, restart_siri=False, displays="main", report=print):
     requested = layout
     geometry = notch_geometry()
     fallback = layout != "classic" and not geometry
@@ -2210,7 +2378,7 @@ def enable(layout, watch, restart_siri=False, report=print):
         # keeps the requested layout and checks again at every login.
         report(f"No active display with a notch was found; using layout \"classic\" instead of \"{layout}\".")
         layout = "classic"
-    patches, sites = build_patches(layout, geometry)
+    patches, sites = build_patches(layout, geometry, displays)
     if not sites.verified:
         report(f"Note: this macOS build ({run('sw_vers', '-buildVersion').stdout.strip()}) has not been "
                "tested. The patch sites were located by their code signatures.")
@@ -2240,7 +2408,7 @@ def enable(layout, watch, restart_siri=False, report=print):
     watcher_note = None
     if watch:
         pid = menubaragent_pid()
-        watcher_note = (f"Background helper started (log: {WATCHER_LOG})." if pid and start_watcher(pid, requested, layout == "notch")
+        watcher_note = (f"Background helper started (log: {WATCHER_LOG})." if pid and start_watcher(pid, requested, layout == "notch", displays)
                         else "The background helper could not be started; clients that start later keep "
                              "their stock widths, and display changes need a new run of this script.")
 
@@ -2248,6 +2416,13 @@ def enable(layout, watch, restart_siri=False, report=print):
                    "below": "expanded presentations are placed below the notch",
                    "classic": "stock position below the menu bar"}[layout]
     report(f"The Dynamic Island is enabled ({description}; {len(patches)} patches).")
+    report({"main": "Displays: the main display only.",
+            "all": "Displays: every active display. Displays other than the built-in one use the stock position.",
+            "secondary": "Displays: every display except the main one, which keeps the ordinary menu bar."}[displays])
+    if sites.multidisplay and not sites.multidisplay.verified:
+        report("Note: the multi-display patch has not been tested on this build.")
+    if sites.multidisplay and not sites.multidisplay.banner:
+        report("System banners appear only on their preferred display on this build.")
     if geometry:
         report(f"Notch: {geometry[0]:g} x {geometry[1]:g} pt.")
     if top_hit_note:
@@ -2307,6 +2482,9 @@ def parse_args():
                          help="apply the patches automatically at every login")
     startup.add_argument("--no-autostart", dest="autostart", action="store_false",
                          help="do not apply the patches at login")
+    parser.add_argument("--displays", choices=DISPLAY_MODES, default=None,
+                        help="main: the island on the main display only (default); all: on every active "
+                             "display; secondary: on every display except the main one")
     parser.add_argument("--layout", choices=LAYOUTS, default="notch",
                         help="notch: wrap around the notch (default); below: expanded presentations "
                              "below the notch; classic: activation only, used automatically when no display "
@@ -2341,7 +2519,7 @@ def login_run(args):
         sys.exit(1)
     time.sleep(5)       # let the login session settle before restarting MenuBarAgent
     try:
-        enable(args.layout, not args.no_watch, bool(args.restart_siri), report=report)
+        enable(args.layout, not args.no_watch, bool(args.restart_siri), args.displays or "main", report=report)
     except SystemExit as exc:
         report(str(exc))
         raise
@@ -2353,7 +2531,7 @@ def reapply_run(args):
         log_line(WATCHER_LOG, "[reapply] " + text)
     time.sleep(3)       # let the display configuration settle
     try:
-        enable(args.layout, True, False, report=report)
+        enable(args.layout, True, False, args.displays or "main", report=report)
     except SystemExit as exc:
         report(str(exc))
         raise
@@ -2363,7 +2541,7 @@ def main():
     args = parse_args()
 
     if args.watcher:
-        run_watcher(args.watcher, args.layout, not args.no_client_widths)
+        run_watcher(args.watcher, args.layout, not args.no_client_widths, args.displays or "main")
         return
     if args.reapply:
         reapply_run(args)
@@ -2405,19 +2583,28 @@ def main():
     if restart_siri is None:
         restart_siri = autostart_restarts_siri()
 
+    displays = args.displays        # None: keep the login item's setting (non-interactive use only)
+    if displays is None and interactive:
+        displays = ask("Where should the Dynamic Island appear?",
+                       [("main", "On the main display only"),
+                        ("all", "On every active display (external displays, Sidecar)"),
+                        ("secondary", "On every display except the main one")])
+    if displays is None:
+        displays = autostart_displays()
+
     autostart = args.autostart      # None: keep the current setting (non-interactive use only)
     if autostart is None and interactive:
         autostart = ask("Apply the Dynamic Island automatically at every login?",
                         [(True, "Yes, apply it at login"),
                          (False, "No, apply it only now (run this script again after a restart)")])
 
-    enable(args.layout, not args.no_watch, restart_siri)
+    enable(args.layout, not args.no_watch, restart_siri, displays)
     if autostart is None:
         autostart = os.path.exists(AUTOSTART_PLIST)
         if autostart:
-            install_autostart(args.layout, not args.no_watch, restart_siri)   # refresh the installed copy
+            install_autostart(args.layout, not args.no_watch, restart_siri, displays)   # refresh the installed copy
     elif autostart:
-        install_autostart(args.layout, not args.no_watch, restart_siri)
+        install_autostart(args.layout, not args.no_watch, restart_siri, displays)
         print(f"Automatic activation at login is enabled (log: {AUTOSTART_LOG}).")
         print("macOS may show a \"Background Items Added\" notification for this login item.")
     elif remove_autostart():

@@ -39,6 +39,7 @@ macOS 27.3 及更高版本的 MenuBarAgent 内置了灵动岛实现，但仅在�
 - **面板宽度。** 每个展开面板的宽度固定在各自的客户端进程中。脚本钩住这些进程中的 SwiftUI frame 初始化函数，将展开范围内的宽度替换为适配刘海的值。对于宽度特殊的客户端（AirDrop、ControlCenter 中的电池横幅），使用专用补丁处理。
 - **后台守护。** 计时器等 Live Activity 客户端按需启动。守护任务 `local.dynamic-island.watcher` 监控 MenuBarAgent 日志，在新客户端接入时自动打补丁，并在 MenuBarAgent 退出时一同退出。日志：`~/Library/Logs/dynamic_island_watcher.log`。 它还会盯着内置屏：分辨率变化或开合盖时，按新的刘海尺寸重新打全部补丁（看不到刘海时用 `classic`）。MenuBarAgent 会重启一次，岛大约 20 秒后恢复。
 - **登录自启。** 脚本可将自身复制到 `~/Library/Application Support/DynamicEnabler/`，并安装 LaunchAgent `local.dynamic-island.autostart`，在每次登录时自动重新应用补丁。日志：`~/Library/Logs/dynamic_island_autostart.log`。
+- **多显示器。** 默认只在主显示器上显示灵动岛。`--displays all` 让所有活跃显示器都显示，`--displays secondary` 让除主显示器以外的显示器显示。MenuBarAgent 用一个小函数决定每块屏的显示方式，菜单栏图标间距也用到它，所以脚本不改原函数，而是在代码洞后面放一份去掉主屏判断的副本，只把灵动岛相关的调用改到副本上。系统横幅会送到每个岛。由 [Eric Dou](https://github.com/Eric-Dou) 贡献。
 
 所有补丁均在内存中进行，不修改系统卷上的任何文件。除非启用了登录自启，重启 MenuBarAgent 或 Mac 后补丁即失效。
 
@@ -64,7 +65,8 @@ python3 enable_dynamic_island.py
 
 1. 启用还是禁用灵动岛。
 2. 启用时：是否重启 Siri AI，让 Siri AI 和聚焦搜索（Spotlight）上岛。如果 Siri AI 未开启或不可用，选哪个都行。
-3. 启用时：是否在每次登录时自动应用。
+3. 启用时：灵动岛显示在哪里（仅主显示器、所有显示器，或除主显示器外的所有显示器）。
+4. 启用时：是否在每次登录时自动应用。
 
 ### 非交互模式
 
@@ -84,6 +86,7 @@ python3 enable_dynamic_island.py --disable                 # 禁用并移除登�
 | `--no-watch` | 不启动后台守护进程。 |
 | `--restart-siri` | 补丁完成后重启 Siri AI，让 Siri AI 和聚焦搜索上岛（配合 `--autostart` 时登录时也会执行）。Siri AI 未开启或不可用时无影响。 |
 | `--no-restart-siri` | 不动 Siri AI。两个选项都不传时，沿用登录项当前的设置。 |
+| `--displays main` / `all` / `secondary` | 灵动岛仅在主显示器（默认）、所有活跃显示器，或除主显示器外的显示器上显示。在 build 26C5035r（beta 1）上，系统横幅仍只出现在其首选显示器上。不传时沿用登录项当前的设置。 |
 
 ### 禁用
 
@@ -95,7 +98,7 @@ python3 enable_dynamic_island.py --disable
 
 ## 已知限制
 
-- 岛只出现在主显示器上（副屏和原生系统一样，把实时活动放在菜单栏）。在内置刘海屏上贴合刘海；外接屏或随航 iPad 当主显示器时，岛在那块屏上用 `classic` 位置。切换主显示器即时生效。内置屏改分辨率、开合盖由后台守护自动重新打补丁（`--no-watch` 时不处理）。在其他屏上，展开面板仍保持为刘海加宽后的宽度。
+- 默认只在主显示器上显示灵动岛（副屏和原生系统一样，把实时活动放在菜单栏），见 `--displays`。多显示器模式只在随航 iPad 作副屏时测试过，尚未在带刘海的 MacBook 或三块以上显示器上测试。在内置刘海屏上贴合刘海；外接屏或随航 iPad 当主显示器时，岛在那块屏上用 `classic` 位置。切换主显示器即时生效。内置屏改分辨率、开合盖由后台守护自动重新打补丁（`--no-watch` 时不处理）。在其他屏上，展开面板仍保持为刘海加宽后的宽度。
 - WidgetKit 渲染的第三方 Live Activity 保持其应用自身设置的宽度。
 - 低电量横幅的加宽效果未经屏幕实际验证。
 

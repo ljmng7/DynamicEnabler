@@ -39,6 +39,7 @@ macOS 27 (27.3 and later) ships a Dynamic Island implementation inside MenuBarAg
 - **Panel widths.** Each expanded panel's width is fixed in the client process that renders it. The script hooks SwiftUI frame initializers in those processes and replaces widths in the expanded range. Clients with unusual sizing (AirDrop, battery banners in ControlCenter) get dedicated patches.
 - **Background helper.** Live Activity clients such as the timer process start on demand. A helper job (`local.dynamic-island.watcher`) watches the MenuBarAgent log and patches new clients as they appear. It exits when MenuBarAgent exits. Log: `~/Library/Logs/dynamic_island_watcher.log`. It also watches the built-in display: when its resolution changes or the lid is opened or closed, it reapplies all patches with the new notch size (or `classic` when no notch is visible). MenuBarAgent restarts once, and the island returns after about 20 seconds.
 - **Login activation.** The script can copy itself to `~/Library/Application Support/DynamicEnabler/` and install a LaunchAgent (`local.dynamic-island.autostart`) that reapplies the patches at every login. Log: `~/Library/Logs/dynamic_island_autostart.log`.
+- **Multiple displays.** By default the island appears on the main display only. `--displays all` shows it on every active display and `--displays secondary` on every display except the main one. MenuBarAgent picks the presentation of each display in a small function that also sets the spacing of menu bar items, so the script leaves it unchanged, places a copy without the main-display check after the code caves, and redirects only the island's callers to the copy. System banners are delivered to every island. Contributed by [Eric Dou](https://github.com/Eric-Dou).
 
 All patches are in memory only. Nothing on the system volume is modified. Restarting MenuBarAgent or the Mac removes the patches unless login activation is enabled.
 
@@ -64,7 +65,8 @@ The script first checks whether SIP's debugging restriction is lifted. If not, i
 
 1. Enable or disable the Dynamic Island.
 2. If enabling: whether to restart Siri AI so that Siri AI and Spotlight appear in the island. If Siri AI is off or not available on your Mac, either choice is fine.
-3. If enabling: whether to apply the Dynamic Island automatically at every login.
+3. If enabling: where the island should appear (main display only, every display, or every display except the main one).
+4. If enabling: whether to apply the Dynamic Island automatically at every login.
 
 ### Non-interactive mode
 
@@ -84,6 +86,7 @@ Additional options:
 | `--no-watch` | Do not start the background helper. |
 | `--restart-siri` | Restart Siri AI after patching so that Siri AI and Spotlight appear in the island (also at login with `--autostart`). No effect if Siri AI is off or not available. |
 | `--no-restart-siri` | Leave Siri AI as it is. Without either option, the login item's current setting is kept. |
+| `--displays main` / `all` / `secondary` | Show the island on the main display only (default), on every active display, or on every display except the main one. On build 26C5035r (beta 1), system banners still appear only on their preferred display. Without the option, the login item's current setting is kept. |
 
 ### Disabling
 
@@ -95,7 +98,7 @@ Stops the background helper, removes login activation, restores client process w
 
 ## Known Limitations
 
-- The island appears on the main display only (secondary displays keep Live Activities in the menu bar, as in stock macOS). On the built-in notch display it fits the notch; when another display (external, Sidecar iPad) is main, it uses the `classic` position there. Switching the main display takes effect immediately. Resolution changes of the built-in display and opening or closing the lid are handled by the background helper, which reapplies the patches (not with `--no-watch`). Expanded panels keep the widened notch widths on other displays.
+- By default the island appears on the main display only (secondary displays keep Live Activities in the menu bar, as in stock macOS); see `--displays`. The multi-display modes have been tested with a Sidecar iPad as second display, not yet with a notched MacBook or more than two displays. On the built-in notch display it fits the notch; when another display (external, Sidecar iPad) is main, it uses the `classic` position there. Switching the main display takes effect immediately. Resolution changes of the built-in display and opening or closing the lid are handled by the background helper, which reapplies the patches (not with `--no-watch`). Expanded panels keep the widened notch widths on other displays.
 - Third-party Live Activities rendered by WidgetKit keep the widths chosen by their apps.
 - The low-battery banner width has not been verified on-screen.
 

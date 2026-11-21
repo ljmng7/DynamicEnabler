@@ -39,6 +39,7 @@ macOS 27 (27.3 et versions ultérieures) inclut une implémentation de la Dynami
 - **Largeurs des panneaux.** La largeur de chaque panneau étendu est fixe dans le processus client qui le rend. Le script intercepte les initialiseurs de frame SwiftUI dans ces processus et remplace les largeurs dans la plage étendue. Les clients avec un dimensionnement inhabituel (AirDrop, bannières de batterie dans ControlCenter) reçoivent des correctifs dédiés.
 - **Assistant en arrière-plan.** Les clients Live Activity comme le processus de minuteur démarrent à la demande. Une tâche d'assistance (`local.dynamic-island.watcher`) surveille le journal de MenuBarAgent et applique des correctifs aux nouveaux clients dès leur apparition. Elle se termine lorsque MenuBarAgent se termine. Journal : `~/Library/Logs/dynamic_island_watcher.log`. Il surveille aussi l'écran intégré : si sa résolution change ou si l'écran est ouvert ou fermé, il réapplique tous les correctifs avec la nouvelle taille d'encoche (ou `classic` sans encoche visible). MenuBarAgent redémarre une fois et l'île revient après environ 20 secondes.
 - **Activation à la connexion.** Le script peut se copier dans `~/Library/Application Support/DynamicEnabler/` et installer un LaunchAgent (`local.dynamic-island.autostart`) qui réapplique les correctifs à chaque connexion. Journal : `~/Library/Logs/dynamic_island_autostart.log`.
+- **Plusieurs écrans.** Par défaut, l'île n'apparaît que sur l'écran principal. `--displays all` l'affiche sur tous les écrans actifs et `--displays secondary` sur tous les écrans sauf le principal. MenuBarAgent choisit la présentation de chaque écran dans une petite fonction qui règle aussi l'espacement des éléments de la barre de menus ; le script la laisse donc intacte, place une copie sans le test d'écran principal après les code caves et ne redirige vers cette copie que les appels liés à l'île. Les bannières système sont transmises à chaque île. Contribution de [Eric Dou](https://github.com/Eric-Dou).
 
 Tous les correctifs sont en mémoire uniquement. Rien sur le volume système n'est modifié. Le redémarrage de MenuBarAgent ou du Mac supprime les correctifs sauf si l'activation à la connexion est activée.
 
@@ -64,7 +65,8 @@ Le script vérifie d'abord si la restriction de débogage du SIP est levée. Sin
 
 1. Activer ou désactiver la Dynamic Island.
 2. En cas d'activation : s'il faut redémarrer Siri AI pour que Siri AI et Spotlight apparaissent dans l'îlot. Si Siri AI est désactivé ou indisponible sur votre Mac, les deux choix conviennent.
-3. En cas d'activation : s'il faut l'appliquer automatiquement à chaque connexion.
+3. En cas d'activation : où l'île doit apparaître (écran principal uniquement, tous les écrans, ou tous sauf le principal).
+4. En cas d'activation : s'il faut l'appliquer automatiquement à chaque connexion.
 
 ### Mode non interactif
 
@@ -84,6 +86,7 @@ Options supplémentaires :
 | `--no-watch` | Ne pas démarrer l'assistant en arrière-plan. |
 | `--restart-siri` | Redémarre Siri AI après l'application des correctifs pour que Siri AI et Spotlight apparaissent dans l'îlot (aussi à la connexion avec `--autostart`). Sans effet si Siri AI est désactivé ou indisponible. |
 | `--no-restart-siri` | Laisse Siri AI tel quel. Sans l'une ou l'autre option, le réglage actuel de l'élément de connexion est conservé. |
+| `--displays main` / `all` / `secondary` | Affiche l'île sur l'écran principal uniquement (par défaut), sur tous les écrans actifs, ou sur tous les écrans sauf le principal. Sur la build 26C5035r (bêta 1), les bannières système restent sur leur écran préféré. Sans l'option, le réglage actuel de l'élément de connexion est conservé. |
 
 ### Désactivation
 
@@ -95,7 +98,7 @@ Arrête l'assistant en arrière-plan, supprime l'activation à la connexion, res
 
 ## Limitations connues
 
-- L'île n'apparaît que sur l'écran principal (les écrans secondaires gardent les activités en direct dans la barre de menus, comme dans macOS standard). Sur l'écran intégré à encoche, elle épouse l'encoche ; si un autre écran (externe, iPad en Sidecar) est principal, elle y prend la position `classic`. Changer d'écran principal prend effet immédiatement. Les changements de résolution de l'écran intégré et l'ouverture ou la fermeture de l'écran sont gérés par l'assistant en arrière-plan, qui réapplique les correctifs (pas avec `--no-watch`). Les vues étendues gardent la largeur élargie sur les autres écrans.
+- Par défaut, l'île n'apparaît que sur l'écran principal (les écrans secondaires gardent les activités en direct dans la barre de menus, comme dans macOS standard) ; voir `--displays`. Les modes multi-écrans ont été testés avec un iPad en Sidecar comme second écran, pas encore avec un MacBook à encoche ni avec plus de deux écrans. Sur l'écran intégré à encoche, elle épouse l'encoche ; si un autre écran (externe, iPad en Sidecar) est principal, elle y prend la position `classic`. Changer d'écran principal prend effet immédiatement. Les changements de résolution de l'écran intégré et l'ouverture ou la fermeture de l'écran sont gérés par l'assistant en arrière-plan, qui réapplique les correctifs (pas avec `--no-watch`). Les vues étendues gardent la largeur élargie sur les autres écrans.
 - Les Live Activities tierces rendues par WidgetKit conservent les largeurs choisies par leurs applications.
 - La largeur de la bannière de batterie faible n'a pas été vérifiée à l'écran.
 

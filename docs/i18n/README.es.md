@@ -39,6 +39,7 @@ macOS 27 (27.3 y posteriores) incluye una implementación de Dynamic Island dent
 - **Anchos de paneles.** El ancho de cada panel expandido está fijo en el proceso cliente que lo renderiza. El script intercepta los inicializadores de frame de SwiftUI en esos procesos y reemplaza los anchos en el rango expandido. Los clientes con dimensionamiento inusual (AirDrop, banners de batería en ControlCenter) reciben parches dedicados.
 - **Ayudante en segundo plano.** Los clientes de Live Activity como el proceso del temporizador se inician bajo demanda. Un trabajo auxiliar (`local.dynamic-island.watcher`) monitorea el registro de MenuBarAgent y parchea nuevos clientes a medida que aparecen. Sale cuando MenuBarAgent sale. Registro: `~/Library/Logs/dynamic_island_watcher.log`. También vigila la pantalla integrada: si cambia su resolución o se abre o cierra la tapa, vuelve a aplicar todos los parches con el nuevo tamaño del notch (o `classic` si no hay notch visible). MenuBarAgent se reinicia una vez y la isla vuelve en unos 20 segundos.
 - **Activación al iniciar sesión.** El script puede copiarse a sí mismo en `~/Library/Application Support/DynamicEnabler/` e instalar un LaunchAgent (`local.dynamic-island.autostart`) que vuelve a aplicar los parches en cada inicio de sesión. Registro: `~/Library/Logs/dynamic_island_autostart.log`.
+- **Varias pantallas.** Por defecto, la isla solo aparece en la pantalla principal. `--displays all` la muestra en todas las pantallas activas y `--displays secondary` en todas salvo la principal. MenuBarAgent elige la presentación de cada pantalla en una pequeña función que también fija el espaciado de los elementos de la barra de menús, así que el script la deja intacta, coloca una copia sin la comprobación de pantalla principal tras las code caves y redirige a esa copia solo las llamadas de la isla. Los banners del sistema llegan a todas las islas. Contribución de [Eric Dou](https://github.com/Eric-Dou).
 
 Todos los parches están solo en memoria. No se modifica nada en el volumen del sistema. Reiniciar MenuBarAgent o el Mac elimina los parches a menos que la activación al iniciar sesión esté habilitada.
 
@@ -64,7 +65,8 @@ El script primero verifica si la restricción de depuración de SIP está levant
 
 1. Activar o desactivar la Dynamic Island.
 2. Si se activa: si reiniciar Siri AI para que Siri AI y Spotlight aparezcan en la isla. Si Siri AI está desactivado o no disponible en tu Mac, cualquier opción sirve.
-3. Si se activa: si aplicarla automáticamente en cada inicio de sesión.
+3. Si se activa: dónde debe aparecer la isla (solo en la pantalla principal, en todas, o en todas salvo la principal).
+4. Si se activa: si aplicarla automáticamente en cada inicio de sesión.
 
 ### Modo no interactivo
 
@@ -84,6 +86,7 @@ Opciones adicionales:
 | `--no-watch` | No iniciar el ayudante en segundo plano. |
 | `--restart-siri` | Reinicia Siri AI tras aplicar los parches para que Siri AI y Spotlight aparezcan en la isla (también al iniciar sesión con `--autostart`). Sin efecto si Siri AI está desactivado o no disponible. |
 | `--no-restart-siri` | Deja Siri AI como está. Sin ninguna de las dos opciones, se mantiene la configuración actual del elemento de inicio. |
+| `--displays main` / `all` / `secondary` | Muestra la isla solo en la pantalla principal (por defecto), en todas las pantallas activas o en todas salvo la principal. En la build 26C5035r (beta 1), los banners del sistema siguen apareciendo solo en su pantalla preferida. Sin la opción, se mantiene la configuración actual del elemento de inicio. |
 
 ### Desactivación
 
@@ -95,7 +98,7 @@ Detiene el ayudante en segundo plano, elimina la activación al iniciar sesión,
 
 ## Limitaciones conocidas
 
-- La isla solo aparece en la pantalla principal (las secundarias muestran las Actividades en vivo en la barra de menús, como en macOS estándar). En la pantalla integrada con notch se ajusta al notch; si otra pantalla (externa, iPad con Sidecar) es la principal, usa allí la posición `classic`. Cambiar la pantalla principal surte efecto al instante. Los cambios de resolución de la pantalla integrada y abrir o cerrar la tapa los gestiona el ayudante en segundo plano, que vuelve a aplicar los parches (no con `--no-watch`). Los paneles expandidos conservan el ancho ampliado en otras pantallas.
+- Por defecto, la isla solo aparece en la pantalla principal (las secundarias muestran las Actividades en vivo en la barra de menús, como en macOS estándar); consulta `--displays`. Los modos de varias pantallas se han probado con un iPad con Sidecar como segunda pantalla, todavía no con un MacBook con notch ni con más de dos pantallas. En la pantalla integrada con notch se ajusta al notch; si otra pantalla (externa, iPad con Sidecar) es la principal, usa allí la posición `classic`. Cambiar la pantalla principal surte efecto al instante. Los cambios de resolución de la pantalla integrada y abrir o cerrar la tapa los gestiona el ayudante en segundo plano, que vuelve a aplicar los parches (no con `--no-watch`). Los paneles expandidos conservan el ancho ampliado en otras pantallas.
 - Las Live Activities de terceros renderizadas por WidgetKit mantienen los anchos elegidos por sus aplicaciones.
 - El ancho del banner de batería baja no se ha verificado en pantalla.
 
