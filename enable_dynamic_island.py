@@ -370,7 +370,11 @@ STOCK_SENSOR_W = 59.0
 # does not show a 1 px edge next to the notch.
 NOTCH_MARGIN = 1.5
 REMOTE_WIDTH_ORIG = ("010080d2", "02008052", "0000ccd2", "e00ee8f2")
-REMOTE_SCALE, REMOTE_SIDE = 0.8, 72.0
+REMOTE_SCALE = 0.8
+TALL_SIDE = 72.0    # side width next to the notch for taller presentations, as for Now Playing
+# iPhone-mirrored activities share one width whatever their height, so the side is wider than
+# TALL_SIDE: leading controls such as Fitness's pause and segment buttons reach about 85 pt.
+REMOTE_SIDE = 90.0
 CAVE_SLOTS = (16, 24, 24, 24, 48, 16, 48)       # instructions per cave
 CAVE_OFFSETS = tuple(sum(CAVE_SLOTS[:i]) * 4 for i in range(len(CAVE_SLOTS)))
 
@@ -1675,7 +1679,6 @@ def load_top_hit():
 EXPANDED_W_RANGE = (230.0, 300.0)   # stock expanded widths: timer 260, AirDrop 234/274, Now Playing 286
 MIN_HEIGHT = 60.0                   # height of single-row (Min Height) expanded presentations
 MIN_SIDE = 100.5                    # single-row: stock side width (260 - 59) / 2, as for timers
-TALL_SIDE = REMOTE_SIDE             # taller presentations: side width next to the notch, as for Now Playing
 SKIP_CLIENTS = ("WidgetRenderer",)  # third-party WidgetKit content is sized by the app itself
 
 # Per-client side width for single-row presentations with less content.
