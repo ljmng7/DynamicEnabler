@@ -31,11 +31,12 @@ macOS 27 (27.3 and later) ships a Dynamic Island implementation inside MenuBarAg
 - Compact and Minimal presentations sit on either side of the notch.
 - Expanded presentations start at the top of the screen and wrap around the notch.
 - Expanded panels of system Live Activities (timers, Now Playing, AirDrop, screen recording, iPhone-mirrored activities) and battery banners are widened so their content is not hidden behind the notch.
+- Compact banners that need room on both sides of the notch, such as the AirPods "moved to iPhone" banner, are no longer cut off.
 
 ## How It Works
 
 - **Activation.** MenuBarAgent reads two preferences, `EmulateCenterHUD` and `ShowSoftwareNotch`, each guarded by an `IsAppleInternalBuild()` check. The script sets both preferences and replaces the two guards with `nop` instructions.
-- **Notch geometry.** The stock island is drawn around a virtual 59 × 34 pt sensor area below the menu bar. The functions that return this rectangle are redirected to small code caves that read the real notch rectangle from `NSScreen` at runtime.
+- **Notch geometry.** The stock island is drawn around a virtual 59 × 34 pt sensor area below the menu bar. The functions that return this rectangle are redirected to small code caves that read the real notch rectangle from `NSScreen` at runtime. MenuBarAgent caps the island at 408 pt, a limit made for the 59 pt sensor, so the script raises it by the extra notch width.
 - **Panel widths.** Each expanded panel's width is fixed in the client process that renders it. The script hooks SwiftUI frame initializers in those processes and replaces widths in the expanded range. Clients with unusual sizing (AirDrop, battery banners in ControlCenter) get dedicated patches.
 - **Background helper.** Live Activity clients such as the timer process start on demand. A helper job (`local.dynamic-island.watcher`) watches the MenuBarAgent log and patches new clients as they appear. It exits when MenuBarAgent exits. Log: `~/Library/Logs/dynamic_island_watcher.log`. It also watches the built-in display: when its resolution changes or the lid is opened or closed, it reapplies all patches with the new notch size (or `classic` when no notch is visible). MenuBarAgent restarts once, and the island returns after about 20 seconds.
 - **Login activation.** The script can copy itself to `~/Library/Application Support/DynamicEnabler/` and install a LaunchAgent (`local.dynamic-island.autostart`) that reapplies the patches at every login. Log: `~/Library/Logs/dynamic_island_autostart.log`.

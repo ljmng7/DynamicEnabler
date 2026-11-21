@@ -31,11 +31,12 @@ macOS 27.3 及更高版本的 MenuBarAgent 內建了動態島實作，但僅在 
 - 精簡態與最小化狀態的膠囊分佈於瀏海兩側。
 - 展開態從螢幕頂部開始，環繞瀏海顯示。
 - 系統 Live Activity（計時器、正在播放、AirDrop、螢幕錄製、iPhone 鏡像活動）和電池橫幅的展開面板會加寬，以防內容被瀏海遮擋。
+- AirPods「已經移到iPhone」這類需要在瀏海兩側留出空間的緊湊橫幅不再被截斷。
 
 ## 運作原理
 
 - **啟用。** MenuBarAgent 透過 `IsAppleInternalBuild()` 檢查來保護 `EmulateCenterHUD` 和 `ShowSoftwareNotch` 兩個偏好設定。指令碼設定這兩個偏好，並將對應的檢查指令替換為 `nop`。
-- **瀏海幾何。** 系統原生動態島以選單列下方一塊 59 × 34 pt 的虛擬區域為基準繪製。指令碼將傳回該矩形的函式重新導向至程式碼洞，讓其在執行時從 `NSScreen` 讀取真實的瀏海矩形。
+- **瀏海幾何。** 系統原生動態島以選單列下方一塊 59 × 34 pt 的虛擬區域為基準繪製。指令碼將傳回該矩形的函式重新導向至程式碼洞，讓其在執行時從 `NSScreen` 讀取真實的瀏海矩形。MenuBarAgent 把島的寬度上限設為 408 pt（按 59 pt 的感測器設計），指令碼會按瀏海多出的寬度提高這個上限。
 - **面板寬度。** 每個展開面板的寬度固定在各自的用戶端程序中。指令碼鉤住這些程序中的 SwiftUI frame 初始化函式，將展開範圍內的寬度替換為適配瀏海的值。對於寬度特殊的用戶端（AirDrop、ControlCenter 中的電池橫幅），使用專用修補程式處理。
 - **背景守護程式。** 計時器等 Live Activity 用戶端按需啟動。守護任務 `local.dynamic-island.watcher` 監控 MenuBarAgent 日誌，在新用戶端接入時自動打修補程式，並在 MenuBarAgent 退出時一同退出。日誌：`~/Library/Logs/dynamic_island_watcher.log`。 它也會監看內建螢幕：解析度變更或開闔蓋時，依新的瀏海尺寸重新套用全部補丁（看不到瀏海時使用 `classic`）。MenuBarAgent 會重新啟動一次，島約 20 秒後恢復。
 - **登入自動啟動。** 指令碼可將自身複製到 `~/Library/Application Support/DynamicEnabler/`，並安裝 LaunchAgent `local.dynamic-island.autostart`，在每次登入時自動重新套用修補程式。日誌：`~/Library/Logs/dynamic_island_autostart.log`。

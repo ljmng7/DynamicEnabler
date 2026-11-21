@@ -31,11 +31,12 @@ macOS 27(27.3 이상)의 MenuBarAgent에는 Dynamic Island 구현이 포함되�
 - 컴팩트 및 최소 표시는 노치 양쪽에 배치됩니다.
 - 확장 표시는 화면 상단에서 시작하여 노치를 감싸도록 표시됩니다.
 - 시스템 Live Activity(타이머, 재생 중, AirDrop, 화면 녹화, iPhone 미러링 활동) 및 배터리 배너의 확장 패널은 콘텐츠가 노치에 가려지지 않도록 너비가 넓어집니다.
+- AirPods의 'iPhone으로 이동됨' 배너처럼 노치 양쪽에 공간이 필요한 컴팩트 배너가 더 이상 잘리지 않습니다.
 
 ## 작동 원리
 
 - **활성화.** MenuBarAgent는 `IsAppleInternalBuild()` 검사로 보호되는 `EmulateCenterHUD` 및 `ShowSoftwareNotch` 두 가지 환경설정을 읽습니다. 스크립트는 이러한 환경설정을 설정하고 두 가드 명령을 `nop`로 대체합니다.
-- **노치 배치.** 기본 Dynamic Island는 메뉴 막대 아래의 가상 59 × 34 pt 센서 영역을 기준으로 그려집니다. 스크립트는 이 사각형을 반환하는 함수를 작은 코드 영역으로 리디렉션하여 런타임에 `NSScreen`에서 실제 노치 사각형을 읽도록 합니다.
+- **노치 배치.** 기본 Dynamic Island는 메뉴 막대 아래의 가상 59 × 34 pt 센서 영역을 기준으로 그려집니다. 스크립트는 이 사각형을 반환하는 함수를 작은 코드 영역으로 리디렉션하여 런타임에 `NSScreen`에서 실제 노치 사각형을 읽도록 합니다. MenuBarAgent는 아일랜드 너비를 408pt로 제한합니다(59pt 센서 기준의 한도). 스크립트는 노치로 늘어난 너비만큼 이 한도를 높입니다.
 - **패널 너비.** 각 확장 패널의 너비는 이를 렌더링하는 클라이언트 프로세스 내에서 고정됩니다. 스크립트는 이러한 프로세스 내의 SwiftUI 프레임 초기화 함수를 후킹하고 확장 범위의 너비를 대체합니다. 특수한 크기 설정을 가진 클라이언트(AirDrop, ControlCenter의 배터리 배너)에는 전용 패치가 적용됩니다.
 - **백그라운드 헬퍼.** 타이머 프로세스와 같은 Live Activity 클라이언트는 온디맨드로 시작됩니다. 헬퍼 작업(`local.dynamic-island.watcher`)이 MenuBarAgent 로그를 모니터링하고 새 클라이언트가 나타나면 패치를 적용합니다. MenuBarAgent가 종료되면 함께 종료됩니다. 로그: `~/Library/Logs/dynamic_island_watcher.log`. 내장 디스플레이도 감시하여 해상도가 바뀌거나 덮개를 열고 닫으면 새 노치 크기로 모든 패치를 다시 적용합니다(노치가 보이지 않으면 `classic`). MenuBarAgent가 한 번 재시작되며 약 20초 후 아일랜드가 돌아옵니다.
 - **로그인 시 활성화.** 스크립트는 자신을 `~/Library/Application Support/DynamicEnabler/`에 복사하고 LaunchAgent(`local.dynamic-island.autostart`)를 설치하여 로그인할 때마다 패치를 다시 적용할 수 있습니다. 로그: `~/Library/Logs/dynamic_island_autostart.log`.

@@ -31,11 +31,12 @@ macOS 27.3 及更高版本的 MenuBarAgent 内置了灵动岛实现，但仅在�
 - 紧凑态和最小化状态的胶囊分布于刘海两侧。
 - 展开态从屏幕顶部开始，环绕刘海显示。
 - 系统 Live Activity（计时器、正在播放、AirDrop、屏幕录制、iPhone 镜像活动）和电池横幅的展开面板会加宽，以防内容被刘海遮挡。
+- AirPods“已经移到iPhone”这类需要在刘海两侧留出空间的紧凑横幅不再被截断。
 
 ## 工作原理
 
 - **激活。** MenuBarAgent 通过 `IsAppleInternalBuild()` 检查来保护 `EmulateCenterHUD` 和 `ShowSoftwareNotch` 两个偏好设置。脚本设置这两个偏好，并将对应的检查指令替换为 `nop`。
-- **刘海几何。** 系统原生灵动岛以菜单栏下方一块 59 × 34 pt 的虚拟区域为基准绘制。脚本将返回该矩形的函数重定向到代码洞，让其在运行时从 `NSScreen` 读取真实的刘海矩形。
+- **刘海几何。** 系统原生灵动岛以菜单栏下方一块 59 × 34 pt 的虚拟区域为基准绘制。脚本将返回该矩形的函数重定向到代码洞，让其在运行时从 `NSScreen` 读取真实的刘海矩形。MenuBarAgent 把岛的宽度上限设为 408 pt（按 59 pt 的传感器设计），脚本会按刘海多出的宽度提高这个上限。
 - **面板宽度。** 每个展开面板的宽度固定在各自的客户端进程中。脚本钩住这些进程中的 SwiftUI frame 初始化函数，将展开范围内的宽度替换为适配刘海的值。对于宽度特殊的客户端（AirDrop、ControlCenter 中的电池横幅），使用专用补丁处理。
 - **后台守护。** 计时器等 Live Activity 客户端按需启动。守护任务 `local.dynamic-island.watcher` 监控 MenuBarAgent 日志，在新客户端接入时自动打补丁，并在 MenuBarAgent 退出时一同退出。日志：`~/Library/Logs/dynamic_island_watcher.log`。 它还会盯着内置屏：分辨率变化或开合盖时，按新的刘海尺寸重新打全部补丁（看不到刘海时用 `classic`）。MenuBarAgent 会重启一次，岛大约 20 秒后恢复。
 - **登录自启。** 脚本可将自身复制到 `~/Library/Application Support/DynamicEnabler/`，并安装 LaunchAgent `local.dynamic-island.autostart`，在每次登录时自动重新应用补丁。日志：`~/Library/Logs/dynamic_island_autostart.log`。

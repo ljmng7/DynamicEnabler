@@ -355,6 +355,9 @@ EPILOGUE = [0xA8C17BFD, 0xD65F03C0]  # ldp x29, x30, [sp], #16 ; ret
 #                       both the expanded and the list item metrics; the cave returns a width that
 #                       leaves REMOTE_SIDE pt on each side of the notch. Clients request new content
 #                       after the change, which takes a few seconds.
+#   max_width_literal   (408, 37): the widest island and the compact height. The compact island
+#                       (leading + sensor + trailing) is capped at this width, which leaves too
+#                       little room on each side of the notch; the width grows by notch - 59.
 #   caves               seven code caves in the zero padding at the end of the __TEXT segment
 #
 # Only the island on the built-in display fits the notch. The island is shown on the main display,
@@ -365,6 +368,7 @@ EPILOGUE = [0xA8C17BFD, 0xD65F03C0]  # ldp x29, x30, [sp], #16 ; ret
 
 PACIBSP = 0xD503237F
 STOCK_SENSOR_W = 59.0
+STOCK_MAX_W = 408.0     # widest island (compact and expanded) around the stock 59 pt sensor
 # The gap that the system reports between the two menu bar areas is slightly wider than the
 # visible notch. Island geometry is narrowed by this margin on each side so that the idle pill
 # does not show a 1 px edge next to the notch.
@@ -624,6 +628,19 @@ def locate_sites(image):
     # Remote Live Activity width: `mov x1, #0 ; mov w2, #0 ; x0 = 374.0 ; ret`
     s.remote_width_site = one("remote width", m.find([int.from_bytes(bytes.fromhex(h), "little")
                                                         for h in REMOTE_WIDTH_ORIG] + [0xD65F03C0]))
+
+    # Island size limit: the 16-byte literal (408.0, 37.0) = (maximum width, compact height),
+    # loaded once with `adrp ; ldr q` when the layout metrics are created.
+    pattern, lits = struct.pack("<dd", STOCK_MAX_W, 37.0), []
+    i = image.find(pattern)
+    while i >= 0:
+        if i % 16 == 0:
+            lits.append(m.base + i)
+        i = image.find(pattern, i + 1)
+    s.max_width_literal = one("island size limit", lits)
+    one("island size limit load", [a for a in range(m.t0, m.t1 - 4, 4)
+                                   if m.w(a) & 0x9F000000 == 0x90000000 and m.w(a + 4) & 0xFFC00000 == 0x3DC00000
+                                   and m.adrp_page(a)[0] + ((m.w(a + 4) >> 10) & 0xFFF) * 16 == s.max_width_literal])
 
     # Code caves: zero padding between the last __TEXT section and the end of the segment.
     vmaddr, vmsize = m.segments["__TEXT"]
@@ -925,6 +942,12 @@ def build_patches(layout, geometry, displays="main"):
         patches.append((a, orig_word(a), enc(bl(a, cave4))))
     if not below:
         patches.append((s.remote_width_site, orig_word(s.remote_width_site), enc(b(s.remote_width_site, cave5))))
+    # The size limit was made for the 59 pt sensor. Around the notch it leaves too little room on
+    # each side, e.g. for the "moved to iPhone" AirPods banner, so it grows by the extra notch width.
+    max_w = struct.pack("<d", STOCK_MAX_W + real_notch_w - STOCK_SENSOR_W)
+    for i in (0, 4):
+        a = s.max_width_literal + i
+        patches.append((a, orig_word(a), max_w[i: i + 4]))
     return patches, s
 
 
